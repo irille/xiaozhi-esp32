@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "bundle_id": "irille-s3-eye-hi-esp-otto-v1",
+  "target_board": "irille-s3-eye",
+  "partition_limit_bytes": 2097152,
+  "generator": {
+    "repository": "https://github.com/78/xiaozhi-assets-generator",
+    "commit": "55517b40d724014faff00f941ca700cbf9d14b51"
+  },
+  "wakeword": {
+    "display": "Hi ESP",
+    "model": "wn9_hiesp"
+  },
+  "emoji_source": {
+    "repository": "https://github.com/txp666/otto-emoji-gif-component",
+    "commit": "970cf66906d7c30059faa2704e7002f06b8c3619",
+    "license": "MIT"
+  },
+  "emoji_entries": [
+    {"name": "neutral", "file": "neutral.gif", "sha256": ""},
+    {"name": "happy", "file": "happy.gif", "sha256": ""},
+    {"name": "laughing", "file": "laughing.gif", "sha256": ""},
+    {"name": "funny", "file": "funny.gif", "sha256": ""},
+    {"name": "sad", "file": "sad.gif", "sha256": ""},
+    {"name": "angry", "file": "angry.gif", "sha256": ""},
+    {"name": "crying", "file": "crying.gif", "sha256": ""},
+    {"name": "loving", "file": "loving.gif", "sha256": ""},
+    {"name": "embarrassed", "file": "embarrassed.gif", "sha256": ""},
+    {"name": "surprised", "file": "surprised.gif", "sha256": ""},
+    {"name": "shocked", "file": "shocked.gif", "sha256": ""},
+    {"name": "thinking", "file": "thinking.gif", "sha256": ""},
+    {"name": "winking", "file": "winking.gif", "sha256": ""},
+    {"name": "cool", "file": "cool.gif", "sha256": ""},
+    {"name": "relaxed", "file": "relaxed.gif", "sha256": ""},
+    {"name": "delicious", "file": "delicious.gif", "sha256": ""},
+    {"name": "kissy", "file": "kissy.gif", "sha256": ""},
+    {"name": "confident", "file": "confident.gif", "sha256": ""},
+    {"name": "sleepy", "file": "sleepy.gif", "sha256": ""},
+    {"name": "silly", "file": "silly.gif", "sha256": ""},
+    {"name": "confused", "file": "confused.gif", "sha256": ""}
+  ],
+  "assets": {
+    "file": "assets.bin",
+    "size_bytes": 0,
+    "sha256": ""
+  }
+}
