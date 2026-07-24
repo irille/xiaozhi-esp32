@@ -162,6 +162,24 @@ bool AfeAudioEngine::Initialize(AudioCodec* codec, int frame_duration_ms, srmode
         return false;
     }
 
+#if CONFIG_WAKENET_DET_THRESHOLD_PERCENT > 0
+    static_assert(
+        CONFIG_WAKENET_DET_THRESHOLD_PERCENT >= 40 &&
+            CONFIG_WAKENET_DET_THRESHOLD_PERCENT <= 99,
+        "WakeNet detection threshold must be 0 or between 40 and 99 percent");
+    if (wake_detector_ == WakeDetector::kWakeNet) {
+        constexpr float threshold = CONFIG_WAKENET_DET_THRESHOLD_PERCENT / 100.0f;
+        if (afe_iface_->set_wakenet_threshold(afe_data_, 1, threshold) < 0) {
+            ESP_LOGE(TAG, "Failed to set WakeNet detection threshold to %.2f", threshold);
+            afe_iface_->destroy(afe_data_);
+            afe_data_ = nullptr;
+            afe_iface_ = nullptr;
+            return false;
+        }
+        ESP_LOGI(TAG, "WakeNet detection threshold set to %.2f", threshold);
+    }
+#endif
+
     if (wake_detector_ == WakeDetector::kWakeNet) {
         afe_iface_->disable_wakenet(afe_data_);
     }

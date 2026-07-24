@@ -840,6 +840,16 @@ choice WAKE_WORD_TYPE
 
 endchoice
 
+config WAKENET_DET_THRESHOLD_PERCENT
+    int "WakeNet Detection Threshold (%)"
+    default 0
+    range 0 99
+    depends on USE_AFE_WAKE_WORD
+    help
+        Override the WakeNet detection threshold as a percentage. Set to 0 to
+        use the threshold bundled with the model. Valid overrides are 40-99;
+        smaller values are more sensitive and may increase false wake-ups.
+
 config CUSTOM_WAKE_WORD
     string "Custom Wake Word"
     default "xiao tu dou"
