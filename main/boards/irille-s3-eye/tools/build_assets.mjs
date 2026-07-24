@@ -33,6 +33,11 @@ const LICENSE_FILES = [
     asset: "LICENSE.xiaozhi-fonts.txt",
     sha256: "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
   },
+  {
+    source: "esp-sr.ESPRESSIF-MIT.LICENSE",
+    asset: "LICENSE.esp-sr.txt",
+    sha256: "923e6274ea64b226c4f0cb9fc29bda915ae343fd6a8fc290ff5e0daaa85f8813",
+  },
 ];
 const EMOTIONS = [
   "neutral", "happy", "laughing", "funny", "sad", "angry", "crying",

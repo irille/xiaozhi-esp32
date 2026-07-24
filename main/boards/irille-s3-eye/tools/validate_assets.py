@@ -54,6 +54,10 @@ EXPECTED_LICENSE_FILES = {
         "xiaozhi-fonts.Apache-2.0.LICENSE",
         "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
     ),
+    "LICENSE.esp-sr.txt": (
+        "esp-sr.ESPRESSIF-MIT.LICENSE",
+        "923e6274ea64b226c4f0cb9fc29bda915ae343fd6a8fc290ff5e0daaa85f8813",
+    ),
 }
 EXPECTED_EMOJI_SOURCE_SHA256 = {
     "neutral": "edcb042a7ff48dcc0da0d7bafa7a08171e41ad9efe29d2bc5d552f0ed8b27eb7",
@@ -79,6 +83,13 @@ EXPECTED_EMOJI_SOURCE_SHA256 = {
     "confused": "244a67c812f8b6a39681258a16f38249f7c47d496ed77c7731ab6d5069ac0fab",
 }
 EXPECTED_WAKEWORD_MODEL = "wn9_heyily_tts2"
+EXPECTED_WAKEWORD_COMPONENT = "espressif/esp-sr"
+EXPECTED_WAKEWORD_VERSION = "2.4.7"
+EXPECTED_WAKEWORD_COMPONENT_HASH = (
+    "809d0041cdddd98a278f0d5afef7bb60a451290577b98cf718dfffc91bdcbd9b"
+)
+EXPECTED_WAKEWORD_REPOSITORY_COMMIT = "2f8c4b0459db5bbb39abd77adae27962d6d94bcb"
+EXPECTED_WAKEWORD_LICENSE = "ESPRESSIF-MIT"
 EXPECTED_CUSTOM_PHRASES = {"你好爱莉丝", "Hi Iris"}
 EXPECTED_CUSTOM_MODEL_FAMILY = "WakeNet9"
 EXPECTED_CUSTOM_MODEL_FORMAT = "srmodels-v1"
@@ -390,6 +401,26 @@ def validate(manifest_path: Path) -> dict[str, Any]:
     _require(
         wakeword.get("model") == EXPECTED_WAKEWORD_MODEL,
         f"wakeword model must be {EXPECTED_WAKEWORD_MODEL}",
+    )
+    _require(
+        wakeword.get("component") == EXPECTED_WAKEWORD_COMPONENT,
+        "wakeword component mismatch",
+    )
+    _require(
+        wakeword.get("version") == EXPECTED_WAKEWORD_VERSION,
+        "wakeword component version mismatch",
+    )
+    _require(
+        wakeword.get("component_hash") == EXPECTED_WAKEWORD_COMPONENT_HASH,
+        "wakeword component hash mismatch",
+    )
+    _require(
+        wakeword.get("repository_commit") == EXPECTED_WAKEWORD_REPOSITORY_COMMIT,
+        "wakeword repository commit mismatch",
+    )
+    _require(
+        wakeword.get("license") == EXPECTED_WAKEWORD_LICENSE,
+        "wakeword license mismatch",
     )
 
     for _asset_file, (source_file, expected_sha) in EXPECTED_LICENSE_FILES.items():

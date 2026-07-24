@@ -104,6 +104,9 @@ def _write_bundle(root: Path, model_names: list[str]) -> Path:
         "LICENSE.xiaozhi-fonts.txt": (
             BOARD_DIR / "LICENSES" / "xiaozhi-fonts.Apache-2.0.LICENSE"
         ).read_bytes(),
+        "LICENSE.esp-sr.txt": (
+            BOARD_DIR / "LICENSES" / "esp-sr.ESPRESSIF-MIT.LICENSE"
+        ).read_bytes(),
     }
     emoji_payloads = {
         name: b"GIF89a" + name.encode("ascii") for name in sorted(EXPECTED_EMOTIONS)
@@ -143,6 +146,9 @@ def _write_bundle(root: Path, model_names: list[str]) -> Path:
     (root / "LICENSES" / "xiaozhi-fonts.Apache-2.0.LICENSE").write_bytes(
         (BOARD_DIR / "LICENSES" / "xiaozhi-fonts.Apache-2.0.LICENSE").read_bytes()
     )
+    (root / "LICENSES" / "esp-sr.ESPRESSIF-MIT.LICENSE").write_bytes(
+        (BOARD_DIR / "LICENSES" / "esp-sr.ESPRESSIF-MIT.LICENSE").read_bytes()
+    )
     manifest = {
         "schema_version": 1,
         "bundle_id": "synthetic",
@@ -152,7 +158,17 @@ def _write_bundle(root: Path, model_names: list[str]) -> Path:
             "repository": "https://github.com/78/xiaozhi-assets-generator",
             "commit": "55517b40d724014faff00f941ca700cbf9d14b51",
         },
-        "wakeword": {"display": "Hey,Ily", "model": "wn9_heyily_tts2"},
+        "wakeword": {
+            "display": "Hey,Ily",
+            "model": "wn9_heyily_tts2",
+            "component": "espressif/esp-sr",
+            "version": "2.4.7",
+            "component_hash": (
+                "809d0041cdddd98a278f0d5afef7bb60a451290577b98cf718dfffc91bdcbd9b"
+            ),
+            "repository_commit": "2f8c4b0459db5bbb39abd77adae27962d6d94bcb",
+            "license": "ESPRESSIF-MIT",
+        },
         "emoji_source": {
             "repository": "https://github.com/txp666/otto-emoji-gif-component",
             "commit": "970cf66906d7c30059faa2704e7002f06b8c3619",
@@ -475,6 +491,7 @@ class BoardContractTests(unittest.TestCase):
         for file_name, local_name in (
             ("LICENSE.otto-emoji-gif.txt", "otto-emoji-gif-component.LICENSE"),
             ("LICENSE.xiaozhi-fonts.txt", "xiaozhi-fonts.Apache-2.0.LICENSE"),
+            ("LICENSE.esp-sr.txt", "esp-sr.ESPRESSIF-MIT.LICENSE"),
         ):
             self.assertIn(file_name, files)
             self.assertEqual(
@@ -517,6 +534,18 @@ class BoardContractTests(unittest.TestCase):
         )
         self.assertEqual(set(manifest["generator"]), {"repository", "commit"})
         self.assertEqual(
+            set(manifest["wakeword"]),
+            {
+                "display",
+                "model",
+                "component",
+                "version",
+                "component_hash",
+                "repository_commit",
+                "license",
+            },
+        )
+        self.assertEqual(
             set(manifest["emoji_source"]), {"repository", "commit", "license"}
         )
         self.assertEqual(
@@ -552,6 +581,8 @@ class BoardContractTests(unittest.TestCase):
             "d45dbc64052d57048f20ab1770074172ce9eb53b",
             "MIT",
             "Apache-2.0",
+            "2f8c4b0459db5bbb39abd77adae27962d6d94bcb",
+            "ESPRESSIF-MIT",
             "CONFIG_SR_WN_WN9_NIHAOXIAOZHI_TTS=n",
             "CONFIG_SR_WN_WN9_HIESP=n",
             "CONFIG_SR_WN_WN9_SOPHIA_TTS=n",

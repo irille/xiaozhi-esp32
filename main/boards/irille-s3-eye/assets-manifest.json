@@ -9,7 +9,12 @@
   },
   "wakeword": {
     "display": "Hey,Ily",
-    "model": "wn9_heyily_tts2"
+    "model": "wn9_heyily_tts2",
+    "component": "espressif/esp-sr",
+    "version": "2.4.7",
+    "component_hash": "809d0041cdddd98a278f0d5afef7bb60a451290577b98cf718dfffc91bdcbd9b",
+    "repository_commit": "2f8c4b0459db5bbb39abd77adae27962d6d94bcb",
+    "license": "ESPRESSIF-MIT"
   },
   "emoji_source": {
     "repository": "https://github.com/txp666/otto-emoji-gif-component",
@@ -54,11 +59,12 @@
   ],
   "license_files": [
     {"asset_file": "LICENSE.otto-emoji-gif.txt", "sha256": "bd806361232a065ead834a53a04b34ba51eacb257ccdb21a6506f0e8738930d8"},
-    {"asset_file": "LICENSE.xiaozhi-fonts.txt", "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"}
+    {"asset_file": "LICENSE.xiaozhi-fonts.txt", "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"},
+    {"asset_file": "LICENSE.esp-sr.txt", "sha256": "923e6274ea64b226c4f0cb9fc29bda915ae343fd6a8fc290ff5e0daaa85f8813"}
   ],
   "assets": {
     "file": "assets.bin",
-    "size_bytes": 1839445,
-    "sha256": "c55d72a1429af3559e89d65fe644bf70d8b1d30f14acbd07b063923dcc101dd0"
+    "size_bytes": 1840679,
+    "sha256": "7fcfd86a6b0d10ebe44f55bd8d751431012312e0b0e1b2f22a95f1d4c3aafc37"
   }
 }
