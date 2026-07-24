@@ -45,6 +45,16 @@ EXPECTED_EMOJI_COMMIT = "970cf66906d7c30059faa2704e7002f06b8c3619"
 EXPECTED_OTTO_LICENSE_SHA256 = (
     "bd806361232a065ead834a53a04b34ba51eacb257ccdb21a6506f0e8738930d8"
 )
+EXPECTED_LICENSE_FILES = {
+    "LICENSE.otto-emoji-gif.txt": (
+        "otto-emoji-gif-component.LICENSE",
+        EXPECTED_OTTO_LICENSE_SHA256,
+    ),
+    "LICENSE.xiaozhi-fonts.txt": (
+        "xiaozhi-fonts.Apache-2.0.LICENSE",
+        "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    ),
+}
 EXPECTED_EMOJI_SOURCE_SHA256 = {
     "neutral": "edcb042a7ff48dcc0da0d7bafa7a08171e41ad9efe29d2bc5d552f0ed8b27eb7",
     "happy": "9d2c6701d7a7a81208a00cf4c76ec1ca64f1f6ddc4a884b94aa489cc71c120a3",
@@ -382,11 +392,23 @@ def validate(manifest_path: Path) -> dict[str, Any]:
         f"wakeword model must be {EXPECTED_WAKEWORD_MODEL}",
     )
 
-    license_path = root / "LICENSES" / "otto-emoji-gif-component.LICENSE"
-    _require(license_path.is_file(), "Otto MIT license file is missing")
+    for _asset_file, (source_file, expected_sha) in EXPECTED_LICENSE_FILES.items():
+        license_path = root / "LICENSES" / source_file
+        _require(license_path.is_file(), f"license file is missing: {source_file}")
+        _require(
+            _sha256(license_path.read_bytes()) == expected_sha,
+            f"license SHA-256 mismatch: {source_file}",
+        )
+
+    license_files = manifest.get("license_files")
+    _require(isinstance(license_files, list), "license_files must be a list")
+    expected_license_manifest = [
+        {"asset_file": asset_file, "sha256": expected_sha}
+        for asset_file, (_source_file, expected_sha) in EXPECTED_LICENSE_FILES.items()
+    ]
     _require(
-        _sha256(license_path.read_bytes()) == EXPECTED_OTTO_LICENSE_SHA256,
-        "Otto MIT license SHA-256 mismatch",
+        license_files == expected_license_manifest,
+        "license_files do not match the pinned release licenses",
     )
 
     assets_meta = manifest.get("assets")
@@ -463,11 +485,21 @@ def validate(manifest_path: Path) -> dict[str, Any]:
         "index.json emoji entries do not match the canonical set",
     )
 
-    expected_files = {"index.json", "srmodels.bin", EXPECTED_FONT_FILE} | {
+    expected_files = {
+        "index.json",
+        "srmodels.bin",
+        EXPECTED_FONT_FILE,
+        *EXPECTED_LICENSE_FILES,
+    } | {
         f"{name}.gif" for name in EXPECTED_EMOTIONS
     }
     _require(set(files) == expected_files, "assets contains missing or unexpected files")
     _require(_sha256(files[EXPECTED_FONT_FILE]) == font_sha, "text font sha256 mismatch")
+    for asset_file, (_source_file, expected_sha) in EXPECTED_LICENSE_FILES.items():
+        _require(
+            _sha256(files[asset_file]) == expected_sha,
+            f"embedded license SHA-256 mismatch: {asset_file}",
+        )
     for name, entry in manifest_by_name.items():
         payload = files[entry["file"]]
         _require(payload.startswith((b"GIF87a", b"GIF89a")), f"{name} is not a GIF")

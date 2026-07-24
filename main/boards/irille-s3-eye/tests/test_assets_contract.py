@@ -82,8 +82,29 @@ def _build_assets(files: dict[str, bytes]) -> bytes:
     return struct.pack("<III", len(files), checksum, len(combined)) + combined
 
 
+def _parse_assets_files(payload: bytes) -> dict[str, bytes]:
+    file_count, _checksum, _combined_size = struct.unpack_from("<III", payload)
+    table = payload[12 : 12 + file_count * 44]
+    data = payload[12 + file_count * 44 :]
+    files: dict[str, bytes] = {}
+    for index in range(file_count):
+        entry = table[index * 44 : (index + 1) * 44]
+        name = entry[:32].split(b"\0", 1)[0].decode("utf-8")
+        size, offset = struct.unpack_from("<II", entry, 32)
+        files[name] = data[offset + 2 : offset + 2 + size]
+    return files
+
+
 def _write_bundle(root: Path, model_names: list[str]) -> Path:
     font_payload = b"synthetic common font"
+    license_payloads = {
+        "LICENSE.otto-emoji-gif.txt": (
+            BOARD_DIR / "LICENSES" / "otto-emoji-gif-component.LICENSE"
+        ).read_bytes(),
+        "LICENSE.xiaozhi-fonts.txt": (
+            BOARD_DIR / "LICENSES" / "xiaozhi-fonts.Apache-2.0.LICENSE"
+        ).read_bytes(),
+    }
     emoji_payloads = {
         name: b"GIF89a" + name.encode("ascii") for name in sorted(EXPECTED_EMOTIONS)
     }
@@ -106,6 +127,7 @@ def _write_bundle(root: Path, model_names: list[str]) -> Path:
         "index.json": json.dumps(index, separators=(",", ":")).encode(),
         "srmodels.bin": _build_srmodels(model_names),
         "font_noto_sans_common_16_4.bin": font_payload,
+        **license_payloads,
         **{f"{name}.gif": payload for name, payload in emoji_payloads.items()},
     }
     assets = _build_assets(files)
@@ -117,6 +139,9 @@ def _write_bundle(root: Path, model_names: list[str]) -> Path:
             encoding="utf-8"
         ),
         encoding="utf-8",
+    )
+    (root / "LICENSES" / "xiaozhi-fonts.Apache-2.0.LICENSE").write_bytes(
+        (BOARD_DIR / "LICENSES" / "xiaozhi-fonts.Apache-2.0.LICENSE").read_bytes()
     )
     manifest = {
         "schema_version": 1,
@@ -156,6 +181,13 @@ def _write_bundle(root: Path, model_names: list[str]) -> Path:
                 "sha256": hashlib.sha256(payload).hexdigest(),
             }
             for name, payload in sorted(emoji_payloads.items())
+        ],
+        "license_files": [
+            {
+                "asset_file": asset_file,
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+            for asset_file, payload in license_payloads.items()
         ],
         "assets": {
             "file": "assets.bin",
@@ -305,7 +337,10 @@ class AssetsValidatorTests(unittest.TestCase):
             )
             result = _run_validator(manifest)
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("Otto MIT license SHA-256 mismatch", result.stderr)
+            self.assertIn(
+                "license SHA-256 mismatch: otto-emoji-gif-component.LICENSE",
+                result.stderr,
+            )
 
     def test_rejects_dirty_pinned_source_repository(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -435,6 +470,17 @@ class BoardContractTests(unittest.TestCase):
             },
         )
 
+    def test_real_bundle_embeds_required_third_party_licenses(self) -> None:
+        files = _parse_assets_files((BOARD_DIR / "assets.bin").read_bytes())
+        for file_name, local_name in (
+            ("LICENSE.otto-emoji-gif.txt", "otto-emoji-gif-component.LICENSE"),
+            ("LICENSE.xiaozhi-fonts.txt", "xiaozhi-fonts.Apache-2.0.LICENSE"),
+        ):
+            self.assertIn(file_name, files)
+            self.assertEqual(
+                files[file_name], (BOARD_DIR / "LICENSES" / local_name).read_bytes()
+            )
+
     def test_board_selects_only_hey_ily_custom_assets(self) -> None:
         config = json.loads((BOARD_DIR / "config.json").read_text(encoding="utf-8"))
         self.assertEqual(len(config["builds"]), 1)
@@ -465,6 +511,7 @@ class BoardContractTests(unittest.TestCase):
                 "emoji_source",
                 "text_font",
                 "emoji_entries",
+                "license_files",
                 "assets",
             },
         )
@@ -489,6 +536,8 @@ class BoardContractTests(unittest.TestCase):
             },
         )
         self.assertEqual(set(manifest["assets"]), {"file", "size_bytes", "sha256"})
+        for entry in manifest["license_files"]:
+            self.assertEqual(set(entry), {"asset_file", "sha256"})
         for entry in manifest["emoji_entries"]:
             self.assertEqual(
                 set(entry), {"name", "file", "source_sha256", "sha256"}

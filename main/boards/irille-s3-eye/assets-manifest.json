@@ -52,9 +52,13 @@
     {"name": "silly", "file": "silly.gif", "source_sha256": "9a1573f1dabe504d283c5f3ae9a5be2fbeba8355b6a644917551bf086165ba8b", "sha256": "77854972fce30700736c56afda948bc05883d5630c30c13397af391ebb514d47"},
     {"name": "confused", "file": "confused.gif", "source_sha256": "244a67c812f8b6a39681258a16f38249f7c47d496ed77c7731ab6d5069ac0fab", "sha256": "b0ea4e618d37f57c45b9da19de766cc575af315f8c8096edcc79dbc312a41415"}
   ],
+  "license_files": [
+    {"asset_file": "LICENSE.otto-emoji-gif.txt", "sha256": "bd806361232a065ead834a53a04b34ba51eacb257ccdb21a6506f0e8738930d8"},
+    {"asset_file": "LICENSE.xiaozhi-fonts.txt", "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"}
+  ],
   "assets": {
     "file": "assets.bin",
-    "size_bytes": 1826933,
-    "sha256": "d25adc5749742b278821a322a964065b99098c39d2d1337e05059fca39c958f6"
+    "size_bytes": 1839445,
+    "sha256": "c55d72a1429af3559e89d65fe644bf70d8b1d30f14acbd07b063923dcc101dd0"
   }
 }

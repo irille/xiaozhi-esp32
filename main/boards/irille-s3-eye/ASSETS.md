@@ -38,8 +38,8 @@ node main/boards/irille-s3-eye/tools/build_assets.mjs \
 240×240、帧数和时长重编码，以给本地 common 字体释放空间；manifest 同时记录原始
 与打包后哈希。生成环境为 Node.js `v26.4.0`；最终输出：
 
-- size：`1,826,933` bytes（距 `0x200000` 上限尚余 `270,219` bytes）
-- SHA-256：`d25adc5749742b278821a322a964065b99098c39d2d1337e05059fca39c958f6`
+- size：`1,839,445` bytes（距 `0x200000` 上限尚余 `257,707` bytes）
+- SHA-256：`c55d72a1429af3559e89d65fe644bf70d8b1d30f14acbd07b063923dcc101dd0`
 
 `assets.bin` 是 release 的 board-local 输入，必须随 firmware commit 入库。上游全局
 `.gitignore` 忽略 `*.bin`，因此生成或升级后需用 `git add -f
@@ -87,6 +87,9 @@ python main/boards/irille-s3-eye/tools/validate_assets.py \
   `LICENSES/otto-emoji-gif-component.LICENSE`，manifest 同时记录固定 source commit。
 - `78/xiaozhi-fonts` 使用 Apache-2.0；manifest 固定组件版本、component hash、仓库 commit
   和实际字体文件 SHA-256。
+- 两份完整许可正文以 `LICENSE.otto-emoji-gif.txt` 与 `LICENSE.xiaozhi-fonts.txt` 嵌入
+  `assets.bin`，因此会随 `merged-binary.bin` 和 release ZIP 一并交付；validator 固定其
+  SHA-256，缺失、截断或替换均会使发布验证失败。
 - Stage 1 `wn9_heyily_tts2` 来自锁定的 Espressif ESP-SR 组件。专属模型只能在供应方明确给出
   来源、兼容版本和非独占商业使用许可后替换，不能用“文件可下载”代替许可证据。
 

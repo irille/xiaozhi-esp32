@@ -11,7 +11,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const GENERATOR_COMMIT = "55517b40d724014faff00f941ca700cbf9d14b51";
 const OTTO_COMMIT = "970cf66906d7c30059faa2704e7002f06b8c3619";
@@ -22,6 +22,18 @@ const FONT_SHA256 =
   "6c801b34ec686e6e31223eceedea2efe5b0cf294b3556d91087a683c86a54384";
 const FFMPEG_VERSION = "8.1.2";
 const MODEL_NAME = "wn9_heyily_tts2";
+const LICENSE_FILES = [
+  {
+    source: "otto-emoji-gif-component.LICENSE",
+    asset: "LICENSE.otto-emoji-gif.txt",
+    sha256: "bd806361232a065ead834a53a04b34ba51eacb257ccdb21a6506f0e8738930d8",
+  },
+  {
+    source: "xiaozhi-fonts.Apache-2.0.LICENSE",
+    asset: "LICENSE.xiaozhi-fonts.txt",
+    sha256: "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+  },
+];
 const EMOTIONS = [
   "neutral", "happy", "laughing", "funny", "sad", "angry", "crying",
   "loving", "embarrassed", "surprised", "shocked", "thinking", "winking",
@@ -81,6 +93,7 @@ const generatorRoot = path.resolve(generatorRootArg);
 const ottoRoot = path.resolve(ottoRootArg);
 const fontRoot = path.resolve(fontRootArg);
 const outputPath = path.resolve(outputArg);
+const boardRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 assertSourceRepository(generatorRoot, GENERATOR_COMMIT);
 assertSourceRepository(ottoRoot, OTTO_COMMIT);
 
@@ -168,6 +181,16 @@ generator.addFile(
     fontPayload.byteOffset + fontPayload.byteLength,
   ),
 );
+for (const license of LICENSE_FILES) {
+  const payload = await fs.readFile(path.join(boardRoot, "LICENSES", license.source));
+  if (sha256(payload) !== license.sha256) {
+    throw new Error(`unexpected SHA-256 for ${license.source}`);
+  }
+  generator.addFile(
+    license.asset,
+    payload.buffer.slice(payload.byteOffset, payload.byteOffset + payload.byteLength),
+  );
+}
 
 const optimizedRoot = await fs.mkdtemp(
   path.join(os.tmpdir(), "irille-s3-eye-assets-"),
