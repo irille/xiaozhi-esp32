@@ -36,7 +36,7 @@ function usage() {
   );
 }
 
-function assertCommit(repositoryPath, expected) {
+function assertSourceRepository(repositoryPath, expected) {
   const actual = execFileSync(
     "git",
     ["-C", repositoryPath, "rev-parse", "HEAD"],
@@ -47,14 +47,31 @@ function assertCommit(repositoryPath, expected) {
       `unexpected source commit for ${repositoryPath}: ${actual}; expected ${expected}`,
     );
   }
+  const status = execFileSync(
+    "git",
+    ["-C", repositoryPath, "status", "--porcelain=v1", "--untracked-files=all"],
+    { encoding: "utf8" },
+  ).trim();
+  if (status) {
+    throw new Error(`source repository is dirty: ${repositoryPath}`);
+  }
 }
 
 function sha256(payload) {
   return createHash("sha256").update(payload).digest("hex");
 }
 
-const [generatorRootArg, ottoRootArg, fontRootArg, outputArg] =
-  process.argv.slice(2);
+const arguments_ = process.argv.slice(2);
+if (arguments_[0] === "--check-repository") {
+  if (!arguments_[1] || !arguments_[2] || arguments_.length !== 3) {
+    console.error("usage: build_assets.mjs --check-repository <path> <commit>");
+    process.exit(2);
+  }
+  assertSourceRepository(path.resolve(arguments_[1]), arguments_[2]);
+  process.exit(0);
+}
+
+const [generatorRootArg, ottoRootArg, fontRootArg, outputArg] = arguments_;
 if (!generatorRootArg || !ottoRootArg || !fontRootArg || !outputArg) {
   usage();
   process.exit(2);
@@ -64,8 +81,8 @@ const generatorRoot = path.resolve(generatorRootArg);
 const ottoRoot = path.resolve(ottoRootArg);
 const fontRoot = path.resolve(fontRootArg);
 const outputPath = path.resolve(outputArg);
-assertCommit(generatorRoot, GENERATOR_COMMIT);
-assertCommit(ottoRoot, OTTO_COMMIT);
+assertSourceRepository(generatorRoot, GENERATOR_COMMIT);
+assertSourceRepository(ottoRoot, OTTO_COMMIT);
 
 const componentHash = (
   await fs.readFile(path.join(fontRoot, ".component_hash"), "utf8")

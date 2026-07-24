@@ -42,6 +42,9 @@ EXPECTED_EMOJI_REPOSITORY = (
     "https://github.com/txp666/otto-emoji-gif-component"
 )
 EXPECTED_EMOJI_COMMIT = "970cf66906d7c30059faa2704e7002f06b8c3619"
+EXPECTED_OTTO_LICENSE_SHA256 = (
+    "bd806361232a065ead834a53a04b34ba51eacb257ccdb21a6506f0e8738930d8"
+)
 EXPECTED_EMOJI_SOURCE_SHA256 = {
     "neutral": "edcb042a7ff48dcc0da0d7bafa7a08171e41ad9efe29d2bc5d552f0ed8b27eb7",
     "happy": "9d2c6701d7a7a81208a00cf4c76ec1ca64f1f6ddc4a884b94aa489cc71c120a3",
@@ -382,8 +385,8 @@ def validate(manifest_path: Path) -> dict[str, Any]:
     license_path = root / "LICENSES" / "otto-emoji-gif-component.LICENSE"
     _require(license_path.is_file(), "Otto MIT license file is missing")
     _require(
-        license_path.read_text(encoding="utf-8").startswith("MIT License"),
-        "Otto license file is not the MIT license",
+        _sha256(license_path.read_bytes()) == EXPECTED_OTTO_LICENSE_SHA256,
+        "Otto MIT license SHA-256 mismatch",
     )
 
     assets_meta = manifest.get("assets")

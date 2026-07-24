@@ -10,6 +10,7 @@ import unittest
 
 BOARD_DIR = Path(__file__).resolve().parents[1]
 VALIDATOR = BOARD_DIR / "tools" / "validate_assets.py"
+BUILDER = BOARD_DIR / "tools" / "build_assets.mjs"
 EXPECTED_EMOTIONS = {
     "neutral",
     "happy",
@@ -112,7 +113,10 @@ def _write_bundle(root: Path, model_names: list[str]) -> Path:
     assets_path.write_bytes(assets)
     (root / "LICENSES").mkdir()
     (root / "LICENSES" / "otto-emoji-gif-component.LICENSE").write_text(
-        "MIT License\n", encoding="utf-8"
+        (BOARD_DIR / "LICENSES" / "otto-emoji-gif-component.LICENSE").read_text(
+            encoding="utf-8"
+        ),
+        encoding="utf-8",
     )
     manifest = {
         "schema_version": 1,
@@ -210,6 +214,23 @@ def _run_candidate_validator(candidate_path: Path) -> subprocess.CompletedProces
     )
 
 
+def _run_repository_check(
+    repository_path: Path, expected_commit: str
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "node",
+            str(BUILDER),
+            "--check-repository",
+            str(repository_path),
+            expected_commit,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
 class AssetsValidatorTests(unittest.TestCase):
     def test_accepts_valid_synthetic_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -274,6 +295,52 @@ class AssetsValidatorTests(unittest.TestCase):
             result = _run_validator(manifest)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("emoji source_sha256 mismatch", result.stderr)
+
+    def test_rejects_truncated_otto_license(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            manifest = _write_bundle(root, ["wn9_heyily_tts2"])
+            (root / "LICENSES" / "otto-emoji-gif-component.LICENSE").write_text(
+                "MIT License\nnot the pinned license\n", encoding="utf-8"
+            )
+            result = _run_validator(manifest)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Otto MIT license SHA-256 mismatch", result.stderr)
+
+    def test_rejects_dirty_pinned_source_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            tracked = root / "tracked.txt"
+            tracked.write_text("pinned\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "tracked.txt"], check=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(root),
+                    "-c",
+                    "user.name=Asset Test",
+                    "-c",
+                    "user.email=asset-test@example.invalid",
+                    "commit",
+                    "-q",
+                    "-m",
+                    "fixture",
+                ],
+                check=True,
+            )
+            expected_commit = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            self.assertEqual(_run_repository_check(root, expected_commit).returncode, 0)
+            tracked.write_text("modified\n", encoding="utf-8")
+            result = _run_repository_check(root, expected_commit)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("source repository is dirty", result.stderr)
 
 
 class WakeWordCandidateTests(unittest.TestCase):
