@@ -35,6 +35,16 @@ EXPECTED_EMOTIONS = {
 }
 
 
+def _expected_source_sha256() -> dict[str, str]:
+    manifest = json.loads(
+        (BOARD_DIR / "assets-manifest.json").read_text(encoding="utf-8")
+    )
+    return {
+        entry["name"]: entry["source_sha256"]
+        for entry in manifest["emoji_entries"]
+    }
+
+
 def _fixed_string(value: str, size: int = 32) -> bytes:
     encoded = value.encode("utf-8")
     if len(encoded) > size:
@@ -138,7 +148,7 @@ def _write_bundle(root: Path, model_names: list[str]) -> Path:
             {
                 "name": name,
                 "file": f"{name}.gif",
-                "source_sha256": hashlib.sha256(payload).hexdigest(),
+                "source_sha256": _expected_source_sha256()[name],
                 "sha256": hashlib.sha256(payload).hexdigest(),
             }
             for name, payload in sorted(emoji_payloads.items())
@@ -241,6 +251,29 @@ class AssetsValidatorTests(unittest.TestCase):
             result = _run_validator(manifest)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("text font repository commit mismatch", result.stderr)
+
+    def test_rejects_assets_filename_that_build_does_not_flash(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            manifest = _write_bundle(root, ["wn9_heyily_tts2"])
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+            (root / "candidate.bin").write_bytes((root / "assets.bin").read_bytes())
+            data["assets"]["file"] = "candidate.bin"
+            manifest.write_text(json.dumps(data), encoding="utf-8")
+            result = _run_validator(manifest)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("assets.file must be assets.bin", result.stderr)
+
+    def test_rejects_source_hash_that_does_not_match_pinned_otto_input(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            manifest = _write_bundle(root, ["wn9_heyily_tts2"])
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+            data["emoji_entries"][0]["source_sha256"] = "0" * 64
+            manifest.write_text(json.dumps(data), encoding="utf-8")
+            result = _run_validator(manifest)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("emoji source_sha256 mismatch", result.stderr)
 
 
 class WakeWordCandidateTests(unittest.TestCase):

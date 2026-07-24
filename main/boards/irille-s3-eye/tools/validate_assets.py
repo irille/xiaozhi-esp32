@@ -42,6 +42,29 @@ EXPECTED_EMOJI_REPOSITORY = (
     "https://github.com/txp666/otto-emoji-gif-component"
 )
 EXPECTED_EMOJI_COMMIT = "970cf66906d7c30059faa2704e7002f06b8c3619"
+EXPECTED_EMOJI_SOURCE_SHA256 = {
+    "neutral": "edcb042a7ff48dcc0da0d7bafa7a08171e41ad9efe29d2bc5d552f0ed8b27eb7",
+    "happy": "9d2c6701d7a7a81208a00cf4c76ec1ca64f1f6ddc4a884b94aa489cc71c120a3",
+    "laughing": "2e571fdc66c48db6a00de204578bbe6eda71ae6a21953981cbc68be3ba733996",
+    "funny": "b3020524fcea2bcdb311bd84b0e6aa87000fbf4caf5f512e4918acc506bf8808",
+    "sad": "6fc08f07bc2275479ed692c0ae5f8c0fce761925696129fc233645df895b5cfb",
+    "angry": "d67aeb6d7a8c5678cbc472757bf5bd5565967d70fc46e780a9ae260c738679b1",
+    "crying": "cad138dec2d92292df6d1d053375484d620e9e1f51e64c5b2a4f1d1d338bcd14",
+    "loving": "3c466f82ceca7c239ea8d27a3fcb6091b63b179234c8350334fa074c0a0d7ff1",
+    "embarrassed": "d9ab84a9839067e935d9db5811a0b113545f4b486ca1384a38353bb37312c915",
+    "surprised": "36e782c38f3f714cdcc7d61e008d77645885115c72eee04cb9e2ffa31fa333f1",
+    "shocked": "45141d5822624a890bf692842695589ac7a2c6126079dcbec45d746938640c43",
+    "thinking": "105d1495832a48b17cc97782666ed6ccd766bbdbfce187f49ff17929f97f5b6c",
+    "winking": "6ed0d8757fdf6bca59e5851ea7f968b6df13f2abf6fffb0f4ba512a09e68bfd2",
+    "cool": "f332bd852f4d1ea7cc2b390626812ec0ce8171899c88bd71dd08dcc56f2bbc05",
+    "relaxed": "ce22ef9b70f4b6602c8389c1f3080e6a479e5d7e7bd916d3c94da71ce33ae39e",
+    "delicious": "23607f905f87b42ae40fe6c20e6e27ba3acf4700c803686606a8cb60b9e2eb93",
+    "kissy": "5a5f9067bc21e71813d0c9c6a0c17289dfc31f35459483e4ad131a3e1e029403",
+    "confident": "2f498822df14c6d4654d6d4a9db87ba9ce55b625bea7484dad07164bbe0e15e9",
+    "sleepy": "6a3f0622163ceec2a3698b77a644b3fe6e227b81432ec49c3373bfcc3d1b035c",
+    "silly": "9a1573f1dabe504d283c5f3ae9a5be2fbeba8355b6a644917551bf086165ba8b",
+    "confused": "244a67c812f8b6a39681258a16f38249f7c47d496ed77c7731ab6d5069ac0fab",
+}
 EXPECTED_WAKEWORD_MODEL = "wn9_heyily_tts2"
 EXPECTED_CUSTOM_PHRASES = {"你好爱莉丝", "Hi Iris"}
 EXPECTED_CUSTOM_MODEL_FAMILY = "WakeNet9"
@@ -366,7 +389,7 @@ def validate(manifest_path: Path) -> dict[str, Any]:
     assets_meta = manifest.get("assets")
     _require(isinstance(assets_meta, dict), "assets must be an object")
     assets_file = assets_meta.get("file")
-    _require(isinstance(assets_file, str) and assets_file, "assets.file is required")
+    _require(assets_file == "assets.bin", "assets.file must be assets.bin")
     assets_path = _resolve_child(root, assets_file, "assets.file")
     _require(assets_path.is_file(), f"assets file is missing: {assets_file}")
     assets_payload = assets_path.read_bytes()
@@ -419,6 +442,10 @@ def validate(manifest_path: Path) -> dict[str, Any]:
             isinstance(source_digest, str)
             and SHA256_PATTERN.fullmatch(source_digest) is not None,
             f"emoji source_sha256 is invalid for {name}",
+        )
+        _require(
+            source_digest == EXPECTED_EMOJI_SOURCE_SHA256.get(name),
+            f"emoji source_sha256 mismatch for {name}",
         )
         manifest_by_name[name] = entry
     _require(set(manifest_by_name) == EXPECTED_EMOTIONS, "manifest emoji names do not match the canonical set")
