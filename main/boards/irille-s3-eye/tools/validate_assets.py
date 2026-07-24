@@ -42,7 +42,7 @@ EXPECTED_EMOJI_REPOSITORY = (
     "https://github.com/txp666/otto-emoji-gif-component"
 )
 EXPECTED_EMOJI_COMMIT = "970cf66906d7c30059faa2704e7002f06b8c3619"
-EXPECTED_WAKEWORD_MODEL = "wn9_hiesp"
+EXPECTED_WAKEWORD_MODEL = "wn9_heyily_tts2"
 EXPECTED_CUSTOM_PHRASES = {"你好爱莉丝", "Hi Iris"}
 EXPECTED_CUSTOM_MODEL_FAMILY = "WakeNet9"
 EXPECTED_CUSTOM_MODEL_FORMAT = "srmodels-v1"
@@ -350,7 +350,7 @@ def validate(manifest_path: Path) -> dict[str, Any]:
 
     wakeword = manifest.get("wakeword")
     _require(isinstance(wakeword, dict), "wakeword must be an object")
-    _require(wakeword.get("display") == "Hi ESP", "wakeword display must be Hi ESP")
+    _require(wakeword.get("display") == "Hey,Ily", "wakeword display must be Hey,Ily")
     _require(
         wakeword.get("model") == EXPECTED_WAKEWORD_MODEL,
         f"wakeword model must be {EXPECTED_WAKEWORD_MODEL}",

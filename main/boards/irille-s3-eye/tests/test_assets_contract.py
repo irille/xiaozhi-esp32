@@ -113,7 +113,7 @@ def _write_bundle(root: Path, model_names: list[str]) -> Path:
             "repository": "https://github.com/78/xiaozhi-assets-generator",
             "commit": "55517b40d724014faff00f941ca700cbf9d14b51",
         },
-        "wakeword": {"display": "Hi ESP", "model": "wn9_hiesp"},
+        "wakeword": {"display": "Hey,Ily", "model": "wn9_heyily_tts2"},
         "emoji_source": {
             "repository": "https://github.com/txp666/otto-emoji-gif-component",
             "commit": "970cf66906d7c30059faa2704e7002f06b8c3619",
@@ -203,14 +203,14 @@ def _run_candidate_validator(candidate_path: Path) -> subprocess.CompletedProces
 class AssetsValidatorTests(unittest.TestCase):
     def test_accepts_valid_synthetic_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
-            manifest = _write_bundle(Path(temp), ["wn9_hiesp"])
+            manifest = _write_bundle(Path(temp), ["wn9_heyily_tts2"])
             result = _run_validator(manifest)
             self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_rejects_a_second_wakenet_model(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             manifest = _write_bundle(
-                Path(temp), ["wn9_hiesp", "wn9_nihaoxiaozhi_tts"]
+                Path(temp), ["wn9_heyily_tts2", "wn9_nihaoxiaozhi_tts"]
             )
             result = _run_validator(manifest)
             self.assertNotEqual(result.returncode, 0)
@@ -219,7 +219,7 @@ class AssetsValidatorTests(unittest.TestCase):
     def test_rejects_corrupt_assets_checksum(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            manifest = _write_bundle(root, ["wn9_hiesp"])
+            manifest = _write_bundle(root, ["wn9_heyily_tts2"])
             assets_path = root / "assets.bin"
             corrupted = bytearray(assets_path.read_bytes())
             corrupted[-1] ^= 0xFF
@@ -234,7 +234,7 @@ class AssetsValidatorTests(unittest.TestCase):
     def test_rejects_wrong_font_repository_commit(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            manifest = _write_bundle(root, ["wn9_hiesp"])
+            manifest = _write_bundle(root, ["wn9_heyily_tts2"])
             data = json.loads(manifest.read_text(encoding="utf-8"))
             data["text_font"]["repository_commit"] = "0" * 40
             manifest.write_text(json.dumps(data), encoding="utf-8")
@@ -335,12 +335,14 @@ class BoardContractTests(unittest.TestCase):
             },
         )
 
-    def test_board_selects_only_hi_esp_custom_assets(self) -> None:
+    def test_board_selects_only_hey_ily_custom_assets(self) -> None:
         config = json.loads((BOARD_DIR / "config.json").read_text(encoding="utf-8"))
         self.assertEqual(len(config["builds"]), 1)
         sdkconfig = set(config["builds"][0]["sdkconfig_append"])
         self.assertIn("CONFIG_SR_WN_WN9_NIHAOXIAOZHI_TTS=n", sdkconfig)
-        self.assertIn("CONFIG_SR_WN_WN9_HIESP=y", sdkconfig)
+        self.assertIn("CONFIG_SR_WN_WN9_HIESP=n", sdkconfig)
+        self.assertIn("CONFIG_SR_WN_WN9_SOPHIA_TTS=n", sdkconfig)
+        self.assertIn("CONFIG_SR_WN_WN9_HEYILY_TTS2=y", sdkconfig)
         self.assertIn("CONFIG_FLASH_CUSTOM_ASSETS=y", sdkconfig)
         self.assertIn(
             'CONFIG_CUSTOM_ASSETS_FILE="boards/irille-s3-eye/assets.bin"',
@@ -402,7 +404,9 @@ class BoardContractTests(unittest.TestCase):
             "MIT",
             "Apache-2.0",
             "CONFIG_SR_WN_WN9_NIHAOXIAOZHI_TTS=n",
-            "CONFIG_SR_WN_WN9_HIESP=y",
+            "CONFIG_SR_WN_WN9_HIESP=n",
+            "CONFIG_SR_WN_WN9_SOPHIA_TTS=n",
+            "CONFIG_SR_WN_WN9_HEYILY_TTS2=y",
             "CONFIG_FLASH_CUSTOM_ASSETS=y",
             'CONFIG_CUSTOM_ASSETS_FILE="boards/irille-s3-eye/assets.bin"',
             "重刷 assets 分区",

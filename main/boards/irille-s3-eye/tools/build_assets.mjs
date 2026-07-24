@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 用固定 xiaozhi-assets-generator 模块打包 Hi ESP + Otto assets.bin。
+ * 用固定 xiaozhi-assets-generator 模块打包 Hey,Ily + Otto assets.bin。
  *
  * 输入仓库必须已 checkout 到本文件内声明的精确 commit。
  */
@@ -21,7 +21,7 @@ const FONT_FILE = "font_noto_sans_common_16_4.bin";
 const FONT_SHA256 =
   "6c801b34ec686e6e31223eceedea2efe5b0cf294b3556d91087a683c86a54384";
 const FFMPEG_VERSION = "8.1.2";
-const MODEL_NAME = "wn9_hiesp";
+const MODEL_NAME = "wn9_heyily_tts2";
 const EMOTIONS = [
   "neutral", "happy", "laughing", "funny", "sad", "angry", "crying",
   "loving", "embarrassed", "surprised", "shocked", "thinking", "winking",

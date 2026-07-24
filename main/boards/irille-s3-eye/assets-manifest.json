@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "bundle_id": "irille-s3-eye-hi-esp-otto-v1",
+  "bundle_id": "irille-s3-eye-hey-ily-otto-v1",
   "target_board": "irille-s3-eye",
   "partition_limit_bytes": 2097152,
   "generator": {
@@ -8,8 +8,8 @@
     "commit": "55517b40d724014faff00f941ca700cbf9d14b51"
   },
   "wakeword": {
-    "display": "Hi ESP",
-    "model": "wn9_hiesp"
+    "display": "Hey,Ily",
+    "model": "wn9_heyily_tts2"
   },
   "emoji_source": {
     "repository": "https://github.com/txp666/otto-emoji-gif-component",
@@ -54,7 +54,7 @@
   ],
   "assets": {
     "file": "assets.bin",
-    "size_bytes": 1827010,
-    "sha256": "11c678b3d9719134442b85397e976ba65e090c188e73d17cf07938f1c3cb6a22"
+    "size_bytes": 1826933,
+    "sha256": "d25adc5749742b278821a322a964065b99098c39d2d1337e05059fca39c958f6"
   }
 }
