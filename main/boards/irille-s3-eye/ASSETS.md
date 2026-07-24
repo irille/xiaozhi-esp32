@@ -41,8 +41,8 @@ node main/boards/irille-s3-eye/tools/build_assets.mjs \
 240×240、帧数和时长重编码，以给本地 common 字体释放空间；manifest 同时记录原始
 与打包后哈希。生成环境为 Node.js `v26.4.0`；最终输出：
 
-- size：`1,840,679` bytes（距 `0x200000` 上限尚余 `256,473` bytes）
-- SHA-256：`7fcfd86a6b0d10ebe44f55bd8d751431012312e0b0e1b2f22a95f1d4c3aafc37`
+- size：`1,840,675` bytes（距 `0x200000` 上限尚余 `256,477` bytes）
+- SHA-256：`535b58f07ef478e716f6adeb703d4fb24087fe087f7706a6195e1034feee76ea`
 
 `assets.bin` 是 release 的 board-local 输入，必须随 firmware commit 入库。上游全局
 `.gitignore` 忽略 `*.bin`，因此生成或升级后需用 `git add -f
@@ -82,6 +82,7 @@ python main/boards/irille-s3-eye/tools/validate_assets.py \
 - srmodels 仅含 `wn9_heyily_tts2`；
 - 本地字体及 metadata 恰好为 `noto-v1/common/16/4`；
 - 输入与输出哈希匹配 manifest；
+- WakeNet `_MODEL_INFO_`、`wn9_data` 与 `wn9_index` 内容哈希匹配锁定来源；
 - Otto MIT LICENSE 存在；
 - ESP-SR ESPRESSIF-MIT LICENSE 存在；
 - `assets.bin <= 0x200000`。

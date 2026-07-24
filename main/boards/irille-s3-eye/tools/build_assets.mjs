@@ -36,7 +36,7 @@ const LICENSE_FILES = [
   {
     source: "esp-sr.ESPRESSIF-MIT.LICENSE",
     asset: "LICENSE.esp-sr.txt",
-    sha256: "923e6274ea64b226c4f0cb9fc29bda915ae343fd6a8fc290ff5e0daaa85f8813",
+    sha256: "4216dce10853a02d02f815e21f10a72f51de610f45fb995108f6dbada595ef70",
   },
 ];
 const EMOTIONS = [

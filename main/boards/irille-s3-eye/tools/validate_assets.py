@@ -56,7 +56,7 @@ EXPECTED_LICENSE_FILES = {
     ),
     "LICENSE.esp-sr.txt": (
         "esp-sr.ESPRESSIF-MIT.LICENSE",
-        "923e6274ea64b226c4f0cb9fc29bda915ae343fd6a8fc290ff5e0daaa85f8813",
+        "4216dce10853a02d02f815e21f10a72f51de610f45fb995108f6dbada595ef70",
     ),
 }
 EXPECTED_EMOJI_SOURCE_SHA256 = {
@@ -90,6 +90,11 @@ EXPECTED_WAKEWORD_COMPONENT_HASH = (
 )
 EXPECTED_WAKEWORD_REPOSITORY_COMMIT = "2f8c4b0459db5bbb39abd77adae27962d6d94bcb"
 EXPECTED_WAKEWORD_LICENSE = "ESPRESSIF-MIT"
+EXPECTED_WAKEWORD_FILES_SHA256 = {
+    "_MODEL_INFO_": "dc4db6b880e0d9511575e93c13e2bc61167076650c4ffdd576c82d59fa67a4e8",
+    "wn9_data": "3ea182aa12253d6acd3e8c5c48037150568b0f9fcfb8a5bbfc614fce4b25f4a2",
+    "wn9_index": "f13338e279d66ecbac972424a3be4c6184708e6019b9aae613243e83bc6230f9",
+}
 EXPECTED_CUSTOM_PHRASES = {"你好爱莉丝", "Hi Iris"}
 EXPECTED_CUSTOM_MODEL_FAMILY = "WakeNet9"
 EXPECTED_CUSTOM_MODEL_FORMAT = "srmodels-v1"
@@ -203,12 +208,13 @@ def _parse_assets(payload: bytes) -> dict[str, bytes]:
     return files
 
 
-def _parse_model_names(payload: bytes) -> list[str]:
+def _parse_models(payload: bytes) -> tuple[list[str], dict[str, dict[str, bytes]]]:
     _require(len(payload) >= 4, "srmodels header is truncated")
     model_count = struct.unpack_from("<I", payload)[0]
     _require(model_count > 0, "srmodels contains no models")
     cursor = 4
     model_names: list[str] = []
+    model_files: dict[str, dict[str, bytes]] = {}
     file_ranges: list[tuple[int, int, str]] = []
 
     for model_index in range(model_count):
@@ -222,6 +228,7 @@ def _parse_model_names(payload: bytes) -> list[str]:
         cursor += 4
         _require(file_count > 0, f"WakeNet model {model_name} has no files")
         model_names.append(model_name)
+        files: dict[str, bytes] = {}
         for file_index in range(file_count):
             _require(
                 cursor + MODEL_FILE_ENTRY_SIZE <= len(payload),
@@ -234,13 +241,16 @@ def _parse_model_names(payload: bytes) -> list[str]:
             start, size = struct.unpack_from("<II", payload, cursor + MODEL_NAME_SIZE)
             cursor += MODEL_FILE_ENTRY_SIZE
             _require(start + size <= len(payload), f"{model_name}/{file_name} is out of bounds")
+            _require(file_name not in files, f"duplicate WakeNet model file: {model_name}/{file_name}")
+            files[file_name] = payload[start : start + size]
             file_ranges.append((start, start + size, f"{model_name}/{file_name}"))
+        model_files[model_name] = files
 
     _require(len(set(model_names)) == len(model_names), "duplicate WakeNet model name")
     for start, end, name in file_ranges:
         _require(start >= cursor, f"{name} overlaps srmodels header")
         _require(end > start, f"{name} is empty")
-    return model_names
+    return model_names, model_files
 
 
 def _load_manifest(path: Path) -> dict[str, Any]:
@@ -422,6 +432,14 @@ def validate(manifest_path: Path) -> dict[str, Any]:
         wakeword.get("license") == EXPECTED_WAKEWORD_LICENSE,
         "wakeword license mismatch",
     )
+    expected_wakeword_manifest = [
+        {"name": name, "sha256": digest}
+        for name, digest in EXPECTED_WAKEWORD_FILES_SHA256.items()
+    ]
+    _require(
+        wakeword.get("files") == expected_wakeword_manifest,
+        "wakeword files do not match the pinned ESP-SR model payloads",
+    )
 
     for _asset_file, (source_file, expected_sha) in EXPECTED_LICENSE_FILES.items():
         license_path = root / "LICENSES" / source_file
@@ -536,11 +554,21 @@ def validate(manifest_path: Path) -> dict[str, Any]:
         _require(payload.startswith((b"GIF87a", b"GIF89a")), f"{name} is not a GIF")
         _require(_sha256(payload) == entry["sha256"], f"emoji sha256 mismatch for {name}")
 
-    model_names = _parse_model_names(files["srmodels.bin"])
+    model_names, model_files = _parse_models(files["srmodels.bin"])
     _require(
         model_names == [EXPECTED_WAKEWORD_MODEL],
         f"expected exactly one WakeNet model ({EXPECTED_WAKEWORD_MODEL}); found {model_names}",
     )
+    wakeword_files = model_files[EXPECTED_WAKEWORD_MODEL]
+    _require(
+        set(wakeword_files) == set(EXPECTED_WAKEWORD_FILES_SHA256),
+        "WakeNet model files do not match the pinned ESP-SR payload set",
+    )
+    for file_name, expected_sha in EXPECTED_WAKEWORD_FILES_SHA256.items():
+        _require(
+            _sha256(wakeword_files[file_name]) == expected_sha,
+            f"WakeNet payload SHA-256 mismatch: {file_name}",
+        )
 
     return {
         "bundle_id": manifest.get("bundle_id"),

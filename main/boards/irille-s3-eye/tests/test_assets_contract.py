@@ -53,18 +53,60 @@ def _fixed_string(value: str, size: int = 32) -> bytes:
     return encoded.ljust(size, b"\0")
 
 
-def _build_srmodels(model_names: list[str]) -> bytes:
-    file_name = "_MODEL_INFO_"
-    payloads = [f"model:{name}".encode() for name in model_names]
-    header_size = 4 + len(model_names) * (32 + 4 + 32 + 4 + 4)
+def _parse_srmodel_files(payload: bytes) -> dict[str, dict[str, bytes]]:
+    model_count = struct.unpack_from("<I", payload)[0]
+    cursor = 4
+    entries: list[tuple[str, list[tuple[str, int, int]]]] = []
+    for _ in range(model_count):
+        model_name = payload[cursor : cursor + 32].split(b"\0", 1)[0].decode()
+        cursor += 32
+        file_count = struct.unpack_from("<I", payload, cursor)[0]
+        cursor += 4
+        files: list[tuple[str, int, int]] = []
+        for _ in range(file_count):
+            file_name = payload[cursor : cursor + 32].split(b"\0", 1)[0].decode()
+            start, size = struct.unpack_from("<II", payload, cursor + 32)
+            cursor += 40
+            files.append((file_name, start, size))
+        entries.append((model_name, files))
+    return {
+        model_name: {
+            file_name: payload[start : start + size]
+            for file_name, start, size in files
+        }
+        for model_name, files in entries
+    }
+
+
+def _canonical_wakeword_files() -> dict[str, bytes]:
+    assets = _parse_assets_files((BOARD_DIR / "assets.bin").read_bytes())
+    return _parse_srmodel_files(assets["srmodels.bin"])["wn9_heyily_tts2"]
+
+
+def _build_srmodels(
+    model_names: list[str], *, substitute_expected_model: bool = False
+) -> bytes:
+    models: list[tuple[str, dict[str, bytes]]] = []
+    for model_name in model_names:
+        if model_name == "wn9_heyily_tts2":
+            files = _canonical_wakeword_files()
+            if substitute_expected_model:
+                files = {**files, "wn9_data": b"substituted WakeNet payload"}
+        else:
+            files = {"_MODEL_INFO_": f"model:{model_name}".encode()}
+        models.append((model_name, files))
+    header_size = 4 + sum(
+        32 + 4 + len(files) * (32 + 4 + 4) for _model_name, files in models
+    )
     headers = bytearray(struct.pack("<I", len(model_names)))
     data = bytearray()
-    for model_name, payload in zip(model_names, payloads, strict=True):
+    for model_name, files in models:
         headers.extend(_fixed_string(model_name))
-        headers.extend(struct.pack("<I", 1))
-        headers.extend(_fixed_string(file_name))
-        headers.extend(struct.pack("<II", header_size + len(data), len(payload)))
-        data.extend(payload)
+        headers.extend(struct.pack("<I", len(files)))
+        for file_name, payload in files.items():
+            headers.extend(_fixed_string(file_name))
+            headers.extend(struct.pack("<II", header_size + len(data), len(payload)))
+            data.extend(payload)
     return bytes(headers + data)
 
 
@@ -95,7 +137,12 @@ def _parse_assets_files(payload: bytes) -> dict[str, bytes]:
     return files
 
 
-def _write_bundle(root: Path, model_names: list[str]) -> Path:
+def _write_bundle(
+    root: Path,
+    model_names: list[str],
+    *,
+    substitute_expected_model: bool = False,
+) -> Path:
     font_payload = b"synthetic common font"
     license_payloads = {
         "LICENSE.otto-emoji-gif.txt": (
@@ -128,7 +175,9 @@ def _write_bundle(root: Path, model_names: list[str]) -> Path:
     }
     files = {
         "index.json": json.dumps(index, separators=(",", ":")).encode(),
-        "srmodels.bin": _build_srmodels(model_names),
+        "srmodels.bin": _build_srmodels(
+            model_names, substitute_expected_model=substitute_expected_model
+        ),
         "font_noto_sans_common_16_4.bin": font_payload,
         **license_payloads,
         **{f"{name}.gif": payload for name, payload in emoji_payloads.items()},
@@ -168,6 +217,20 @@ def _write_bundle(root: Path, model_names: list[str]) -> Path:
             ),
             "repository_commit": "2f8c4b0459db5bbb39abd77adae27962d6d94bcb",
             "license": "ESPRESSIF-MIT",
+            "files": [
+                {
+                    "name": "_MODEL_INFO_",
+                    "sha256": "dc4db6b880e0d9511575e93c13e2bc61167076650c4ffdd576c82d59fa67a4e8",
+                },
+                {
+                    "name": "wn9_data",
+                    "sha256": "3ea182aa12253d6acd3e8c5c48037150568b0f9fcfb8a5bbfc614fce4b25f4a2",
+                },
+                {
+                    "name": "wn9_index",
+                    "sha256": "f13338e279d66ecbac972424a3be4c6184708e6019b9aae613243e83bc6230f9",
+                },
+            ],
         },
         "emoji_source": {
             "repository": "https://github.com/txp666/otto-emoji-gif-component",
@@ -294,6 +357,17 @@ class AssetsValidatorTests(unittest.TestCase):
             result = _run_validator(manifest)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("exactly one WakeNet model", result.stderr)
+
+    def test_rejects_substituted_pinned_wakenet_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            manifest = _write_bundle(
+                Path(temp),
+                ["wn9_heyily_tts2"],
+                substitute_expected_model=True,
+            )
+            result = _run_validator(manifest)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("WakeNet payload SHA-256 mismatch", result.stderr)
 
     def test_rejects_corrupt_assets_checksum(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -543,8 +617,15 @@ class BoardContractTests(unittest.TestCase):
                 "component_hash",
                 "repository_commit",
                 "license",
+                "files",
             },
         )
+        self.assertEqual(
+            {entry["name"] for entry in manifest["wakeword"]["files"]},
+            {"_MODEL_INFO_", "wn9_data", "wn9_index"},
+        )
+        for entry in manifest["wakeword"]["files"]:
+            self.assertEqual(set(entry), {"name", "sha256"})
         self.assertEqual(
             set(manifest["emoji_source"]), {"repository", "commit", "license"}
         )
