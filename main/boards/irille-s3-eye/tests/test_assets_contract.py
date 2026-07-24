@@ -142,8 +142,12 @@ def _write_bundle(
     model_names: list[str],
     *,
     substitute_expected_model: bool = False,
+    substitute_expected_font: bool = False,
 ) -> Path:
-    font_payload = b"synthetic common font"
+    canonical_assets = _parse_assets_files((BOARD_DIR / "assets.bin").read_bytes())
+    font_payload = canonical_assets["font_noto_sans_common_16_4.bin"]
+    if substitute_expected_font:
+        font_payload = b"substituted common font"
     license_payloads = {
         "LICENSE.otto-emoji-gif.txt": (
             BOARD_DIR / "LICENSES" / "otto-emoji-gif-component.LICENSE"
@@ -394,6 +398,17 @@ class AssetsValidatorTests(unittest.TestCase):
             result = _run_validator(manifest)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("text font repository commit mismatch", result.stderr)
+
+    def test_rejects_substituted_pinned_font_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            manifest = _write_bundle(
+                Path(temp),
+                ["wn9_heyily_tts2"],
+                substitute_expected_font=True,
+            )
+            result = _run_validator(manifest)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("text font SHA-256 mismatch", result.stderr)
 
     def test_rejects_assets_filename_that_build_does_not_flash(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

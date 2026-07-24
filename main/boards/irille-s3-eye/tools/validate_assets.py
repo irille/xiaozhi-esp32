@@ -109,6 +109,9 @@ EXPECTED_FONT_COMPONENT_HASH = (
 )
 EXPECTED_FONT_REPOSITORY_COMMIT = "d45dbc64052d57048f20ab1770074172ce9eb53b"
 EXPECTED_FONT_FILE = "font_noto_sans_common_16_4.bin"
+EXPECTED_FONT_SHA256 = (
+    "6c801b34ec686e6e31223eceedea2efe5b0cf294b3556d91087a683c86a54384"
+)
 EXPECTED_FONT_META = {
     "bundle": "noto-v1",
     "charset": "common",
@@ -400,10 +403,7 @@ def validate(manifest_path: Path) -> dict[str, Any]:
     for field, expected in EXPECTED_FONT_META.items():
         _require(text_font.get(field) == expected, f"text font {field} mismatch")
     font_sha = text_font.get("sha256")
-    _require(
-        isinstance(font_sha, str) and SHA256_PATTERN.fullmatch(font_sha) is not None,
-        "text font sha256 must be 64 lowercase hex characters",
-    )
+    _require(font_sha == EXPECTED_FONT_SHA256, "text font SHA-256 mismatch")
 
     wakeword = manifest.get("wakeword")
     _require(isinstance(wakeword, dict), "wakeword must be an object")
