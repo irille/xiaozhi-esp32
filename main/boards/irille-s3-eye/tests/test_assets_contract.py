@@ -84,7 +84,10 @@ def _canonical_wakeword_files() -> dict[str, bytes]:
 
 
 def _build_srmodels(
-    model_names: list[str], *, substitute_expected_model: bool = False
+    model_names: list[str],
+    *,
+    substitute_expected_model: bool = False,
+    append_unreferenced_data: bool = False,
 ) -> bytes:
     models: list[tuple[str, dict[str, bytes]]] = []
     for model_name in model_names:
@@ -107,10 +110,15 @@ def _build_srmodels(
             headers.extend(_fixed_string(file_name))
             headers.extend(struct.pack("<II", header_size + len(data), len(payload)))
             data.extend(payload)
-    return bytes(headers + data)
+    payload = bytes(headers + data)
+    if append_unreferenced_data:
+        payload += b"unreferenced model data"
+    return payload
 
 
-def _build_assets(files: dict[str, bytes]) -> bytes:
+def _build_assets(
+    files: dict[str, bytes], *, append_unreferenced_data: bool = False
+) -> bytes:
     table = bytearray()
     merged = bytearray()
     for file_name, payload in files.items():
@@ -120,6 +128,8 @@ def _build_assets(files: dict[str, bytes]) -> bytes:
         table.extend(_fixed_string(file_name))
         table.extend(struct.pack("<IIHH", len(payload), offset, 0, 0))
     combined = table + merged
+    if append_unreferenced_data:
+        combined += b"unreferenced asset data"
     checksum = sum(combined) & 0xFFFF
     return struct.pack("<III", len(files), checksum, len(combined)) + combined
 
@@ -143,6 +153,8 @@ def _write_bundle(
     *,
     substitute_expected_model: bool = False,
     substitute_expected_font: bool = False,
+    append_unreferenced_asset_data: bool = False,
+    append_unreferenced_model_data: bool = False,
 ) -> Path:
     canonical_assets = _parse_assets_files((BOARD_DIR / "assets.bin").read_bytes())
     font_payload = canonical_assets["font_noto_sans_common_16_4.bin"]
@@ -180,13 +192,17 @@ def _write_bundle(
     files = {
         "index.json": json.dumps(index, separators=(",", ":")).encode(),
         "srmodels.bin": _build_srmodels(
-            model_names, substitute_expected_model=substitute_expected_model
+            model_names,
+            substitute_expected_model=substitute_expected_model,
+            append_unreferenced_data=append_unreferenced_model_data,
         ),
         "font_noto_sans_common_16_4.bin": font_payload,
         **license_payloads,
         **{f"{name}.gif": payload for name, payload in emoji_payloads.items()},
     }
-    assets = _build_assets(files)
+    assets = _build_assets(
+        files, append_unreferenced_data=append_unreferenced_asset_data
+    )
     assets_path = root / "assets.bin"
     assets_path.write_bytes(assets)
     (root / "LICENSES").mkdir()
@@ -387,6 +403,28 @@ class AssetsValidatorTests(unittest.TestCase):
             result = _run_validator(manifest)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("checksum", result.stderr)
+
+    def test_rejects_unreferenced_assets_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            manifest = _write_bundle(
+                Path(temp),
+                ["wn9_heyily_tts2"],
+                append_unreferenced_asset_data=True,
+            )
+            result = _run_validator(manifest)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("assets data ends with unreferenced bytes", result.stderr)
+
+    def test_rejects_unreferenced_srmodels_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            manifest = _write_bundle(
+                Path(temp),
+                ["wn9_heyily_tts2"],
+                append_unreferenced_model_data=True,
+            )
+            result = _run_validator(manifest)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("srmodels data ends with unreferenced bytes", result.stderr)
 
     def test_rejects_wrong_font_repository_commit(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

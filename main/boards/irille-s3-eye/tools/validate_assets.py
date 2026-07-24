@@ -203,11 +203,13 @@ def _parse_assets(payload: bytes) -> dict[str, bytes]:
         ranges.append((offset, end, name))
 
     ranges.sort()
+    _require(ranges[0][0] == 0, "assets data starts with unreferenced bytes")
     for previous, current in zip(ranges, ranges[1:], strict=False):
         _require(
-            previous[1] <= current[0],
-            f"asset payloads overlap: {previous[2]} and {current[2]}",
+            previous[1] == current[0],
+            f"assets data contains gaps or overlapping payloads: {previous[2]} and {current[2]}",
         )
+    _require(ranges[-1][1] == len(data), "assets data ends with unreferenced bytes")
     return files
 
 
@@ -250,9 +252,17 @@ def _parse_models(payload: bytes) -> tuple[list[str], dict[str, dict[str, bytes]
         model_files[model_name] = files
 
     _require(len(set(model_names)) == len(model_names), "duplicate WakeNet model name")
+    file_ranges.sort()
     for start, end, name in file_ranges:
         _require(start >= cursor, f"{name} overlaps srmodels header")
         _require(end > start, f"{name} is empty")
+    _require(file_ranges[0][0] == cursor, "srmodels data starts with unreferenced bytes")
+    for previous, current in zip(file_ranges, file_ranges[1:], strict=False):
+        _require(
+            previous[1] == current[0],
+            f"srmodels data contains gaps or overlapping payloads: {previous[2]} and {current[2]}",
+        )
+    _require(file_ranges[-1][1] == len(payload), "srmodels data ends with unreferenced bytes")
     return model_names, model_files
 
 
