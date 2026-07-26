@@ -11,20 +11,19 @@ AFE_ENGINE = MAIN_DIR / "audio" / "engines" / "afe_audio_engine.cc"
 
 
 class WakeNetThresholdContractTests(unittest.TestCase):
-    def test_board_enables_fifty_three_percent_threshold(self) -> None:
+    def test_board_uses_model_default_threshold(self) -> None:
+        """board 不设阈值覆盖，沿用当前唤醒模型自带的标定值。
+
+        #20 引入的 0.53 是针对 wn9_heyily_tts2 标定的（该模型元数据为
+        `wakenet9l_tts2h12_Hey,Ily_3_0.630_0.635`）。标定值随模型而异，
+        把某个模型的工作点套到另一个模型上没有依据，因此切换模型时必须
+        移除覆盖、回到模型默认，而不是沿用前一个模型的数值。
+        """
         config = json.loads((BOARD_DIR / "config.json").read_text(encoding="utf-8"))
         entries = config["builds"][0]["sdkconfig_append"]
-        sdkconfig = set(entries)
 
-        self.assertIn("CONFIG_WAKENET_DET_THRESHOLD_PERCENT=53", sdkconfig)
-        # 旧值必须已移除：仅断言新值存在时，配置同时残留 56 与 53 也会通过。
-        self.assertNotIn("CONFIG_WAKENET_DET_THRESHOLD_PERCENT=56", sdkconfig)
-        # 声明必须唯一，否则后一条会静默覆盖前一条。
         prefix = "CONFIG_WAKENET_DET_THRESHOLD_PERCENT="
-        self.assertEqual(
-            sum(1 for entry in entries if entry.startswith(prefix)),
-            1,
-        )
+        self.assertEqual([e for e in entries if e.startswith(prefix)], [])
 
     def test_kconfig_defaults_to_disabled_and_documents_valid_range(self) -> None:
         kconfig = KCONFIG.read_text(encoding="utf-8")
