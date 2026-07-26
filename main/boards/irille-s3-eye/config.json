@@ -12,8 +12,6 @@
                 "CONFIG_SR_WN_WN9_SOPHIA_TTS=n",
                 "CONFIG_SR_WN_WN9_HEYILY_TTS2=y",
                 "CONFIG_OTA_URL=\"http://192.168.1.48:8003/xiaozhi/ota/\"",
-                "CONFIG_USE_AUDIO_DEBUGGER=y",
-                "CONFIG_AUDIO_DEBUG_UDP_SERVER=\"192.168.1.157:9999\"",
                 "CONFIG_FLASH_CUSTOM_ASSETS=y",
                 "CONFIG_CUSTOM_ASSETS_FILE=\"boards/irille-s3-eye/assets.bin\"",
                 "CONFIG_CAMERA_OV2640=y",
