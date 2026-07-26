@@ -42,7 +42,59 @@ EXPECTED_EMOJI_REPOSITORY = (
     "https://github.com/txp666/otto-emoji-gif-component"
 )
 EXPECTED_EMOJI_COMMIT = "970cf66906d7c30059faa2704e7002f06b8c3619"
+EXPECTED_OTTO_LICENSE_SHA256 = (
+    "bd806361232a065ead834a53a04b34ba51eacb257ccdb21a6506f0e8738930d8"
+)
+EXPECTED_LICENSE_FILES = {
+    "LICENSE.otto-emoji-gif.txt": (
+        "otto-emoji-gif-component.LICENSE",
+        EXPECTED_OTTO_LICENSE_SHA256,
+    ),
+    "LICENSE.xiaozhi-fonts.txt": (
+        "xiaozhi-fonts.Apache-2.0.LICENSE",
+        "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    ),
+    "LICENSE.esp-sr.txt": (
+        "esp-sr.ESPRESSIF-MIT.LICENSE",
+        "4216dce10853a02d02f815e21f10a72f51de610f45fb995108f6dbada595ef70",
+    ),
+}
+EXPECTED_EMOJI_SOURCE_SHA256 = {
+    "neutral": "edcb042a7ff48dcc0da0d7bafa7a08171e41ad9efe29d2bc5d552f0ed8b27eb7",
+    "happy": "9d2c6701d7a7a81208a00cf4c76ec1ca64f1f6ddc4a884b94aa489cc71c120a3",
+    "laughing": "2e571fdc66c48db6a00de204578bbe6eda71ae6a21953981cbc68be3ba733996",
+    "funny": "b3020524fcea2bcdb311bd84b0e6aa87000fbf4caf5f512e4918acc506bf8808",
+    "sad": "6fc08f07bc2275479ed692c0ae5f8c0fce761925696129fc233645df895b5cfb",
+    "angry": "d67aeb6d7a8c5678cbc472757bf5bd5565967d70fc46e780a9ae260c738679b1",
+    "crying": "cad138dec2d92292df6d1d053375484d620e9e1f51e64c5b2a4f1d1d338bcd14",
+    "loving": "3c466f82ceca7c239ea8d27a3fcb6091b63b179234c8350334fa074c0a0d7ff1",
+    "embarrassed": "d9ab84a9839067e935d9db5811a0b113545f4b486ca1384a38353bb37312c915",
+    "surprised": "36e782c38f3f714cdcc7d61e008d77645885115c72eee04cb9e2ffa31fa333f1",
+    "shocked": "45141d5822624a890bf692842695589ac7a2c6126079dcbec45d746938640c43",
+    "thinking": "105d1495832a48b17cc97782666ed6ccd766bbdbfce187f49ff17929f97f5b6c",
+    "winking": "6ed0d8757fdf6bca59e5851ea7f968b6df13f2abf6fffb0f4ba512a09e68bfd2",
+    "cool": "f332bd852f4d1ea7cc2b390626812ec0ce8171899c88bd71dd08dcc56f2bbc05",
+    "relaxed": "ce22ef9b70f4b6602c8389c1f3080e6a479e5d7e7bd916d3c94da71ce33ae39e",
+    "delicious": "23607f905f87b42ae40fe6c20e6e27ba3acf4700c803686606a8cb60b9e2eb93",
+    "kissy": "5a5f9067bc21e71813d0c9c6a0c17289dfc31f35459483e4ad131a3e1e029403",
+    "confident": "2f498822df14c6d4654d6d4a9db87ba9ce55b625bea7484dad07164bbe0e15e9",
+    "sleepy": "6a3f0622163ceec2a3698b77a644b3fe6e227b81432ec49c3373bfcc3d1b035c",
+    "silly": "9a1573f1dabe504d283c5f3ae9a5be2fbeba8355b6a644917551bf086165ba8b",
+    "confused": "244a67c812f8b6a39681258a16f38249f7c47d496ed77c7731ab6d5069ac0fab",
+}
 EXPECTED_WAKEWORD_MODEL = "wn9_hiesp"
+EXPECTED_WAKEWORD_COMPONENT = "espressif/esp-sr"
+EXPECTED_WAKEWORD_VERSION = "2.4.7"
+EXPECTED_WAKEWORD_COMPONENT_HASH = (
+    "809d0041cdddd98a278f0d5afef7bb60a451290577b98cf718dfffc91bdcbd9b"
+)
+EXPECTED_WAKEWORD_REPOSITORY_COMMIT = "2f8c4b0459db5bbb39abd77adae27962d6d94bcb"
+EXPECTED_WAKEWORD_LICENSE = "ESPRESSIF-MIT"
+EXPECTED_WAKEWORD_FILES_SHA256 = {
+    "_MODEL_INFO_": "5fa834ea17d00c410bc407f0033b073d93944ad96586e0e437b71d5eb656aa59",
+    "wn9_data": "2e9c1f0e7d6ecd8632baef7471896897478e49e49c1c54dcece635f54f456879",
+    "wn9_index": "da36d558d0a378c0a7bdd8348a721b5898c2aa9aef27951f613cc71f7cb7c5cd",
+}
 EXPECTED_CUSTOM_PHRASES = {"你好爱莉丝", "Hi Iris"}
 EXPECTED_CUSTOM_MODEL_FAMILY = "WakeNet9"
 EXPECTED_CUSTOM_MODEL_FORMAT = "srmodels-v1"
@@ -57,6 +109,9 @@ EXPECTED_FONT_COMPONENT_HASH = (
 )
 EXPECTED_FONT_REPOSITORY_COMMIT = "d45dbc64052d57048f20ab1770074172ce9eb53b"
 EXPECTED_FONT_FILE = "font_noto_sans_common_16_4.bin"
+EXPECTED_FONT_SHA256 = (
+    "6c801b34ec686e6e31223eceedea2efe5b0cf294b3556d91087a683c86a54384"
+)
 EXPECTED_FONT_META = {
     "bundle": "noto-v1",
     "charset": "common",
@@ -148,20 +203,23 @@ def _parse_assets(payload: bytes) -> dict[str, bytes]:
         ranges.append((offset, end, name))
 
     ranges.sort()
+    _require(ranges[0][0] == 0, "assets data starts with unreferenced bytes")
     for previous, current in zip(ranges, ranges[1:], strict=False):
         _require(
-            previous[1] <= current[0],
-            f"asset payloads overlap: {previous[2]} and {current[2]}",
+            previous[1] == current[0],
+            f"assets data contains gaps or overlapping payloads: {previous[2]} and {current[2]}",
         )
+    _require(ranges[-1][1] == len(data), "assets data ends with unreferenced bytes")
     return files
 
 
-def _parse_model_names(payload: bytes) -> list[str]:
+def _parse_models(payload: bytes) -> tuple[list[str], dict[str, dict[str, bytes]]]:
     _require(len(payload) >= 4, "srmodels header is truncated")
     model_count = struct.unpack_from("<I", payload)[0]
     _require(model_count > 0, "srmodels contains no models")
     cursor = 4
     model_names: list[str] = []
+    model_files: dict[str, dict[str, bytes]] = {}
     file_ranges: list[tuple[int, int, str]] = []
 
     for model_index in range(model_count):
@@ -175,6 +233,7 @@ def _parse_model_names(payload: bytes) -> list[str]:
         cursor += 4
         _require(file_count > 0, f"WakeNet model {model_name} has no files")
         model_names.append(model_name)
+        files: dict[str, bytes] = {}
         for file_index in range(file_count):
             _require(
                 cursor + MODEL_FILE_ENTRY_SIZE <= len(payload),
@@ -187,13 +246,24 @@ def _parse_model_names(payload: bytes) -> list[str]:
             start, size = struct.unpack_from("<II", payload, cursor + MODEL_NAME_SIZE)
             cursor += MODEL_FILE_ENTRY_SIZE
             _require(start + size <= len(payload), f"{model_name}/{file_name} is out of bounds")
+            _require(file_name not in files, f"duplicate WakeNet model file: {model_name}/{file_name}")
+            files[file_name] = payload[start : start + size]
             file_ranges.append((start, start + size, f"{model_name}/{file_name}"))
+        model_files[model_name] = files
 
     _require(len(set(model_names)) == len(model_names), "duplicate WakeNet model name")
+    file_ranges.sort()
     for start, end, name in file_ranges:
         _require(start >= cursor, f"{name} overlaps srmodels header")
         _require(end > start, f"{name} is empty")
-    return model_names
+    _require(file_ranges[0][0] == cursor, "srmodels data starts with unreferenced bytes")
+    for previous, current in zip(file_ranges, file_ranges[1:], strict=False):
+        _require(
+            previous[1] == current[0],
+            f"srmodels data contains gaps or overlapping payloads: {previous[2]} and {current[2]}",
+        )
+    _require(file_ranges[-1][1] == len(payload), "srmodels data ends with unreferenced bytes")
+    return model_names, model_files
 
 
 def _load_manifest(path: Path) -> dict[str, Any]:
@@ -343,30 +413,67 @@ def validate(manifest_path: Path) -> dict[str, Any]:
     for field, expected in EXPECTED_FONT_META.items():
         _require(text_font.get(field) == expected, f"text font {field} mismatch")
     font_sha = text_font.get("sha256")
-    _require(
-        isinstance(font_sha, str) and SHA256_PATTERN.fullmatch(font_sha) is not None,
-        "text font sha256 must be 64 lowercase hex characters",
-    )
+    _require(font_sha == EXPECTED_FONT_SHA256, "text font SHA-256 mismatch")
 
     wakeword = manifest.get("wakeword")
     _require(isinstance(wakeword, dict), "wakeword must be an object")
-    _require(wakeword.get("display") == "Hi ESP", "wakeword display must be Hi ESP")
+    _require(wakeword.get("display") == "Hi,ESP", "wakeword display must be Hi,ESP")
     _require(
         wakeword.get("model") == EXPECTED_WAKEWORD_MODEL,
         f"wakeword model must be {EXPECTED_WAKEWORD_MODEL}",
     )
-
-    license_path = root / "LICENSES" / "otto-emoji-gif-component.LICENSE"
-    _require(license_path.is_file(), "Otto MIT license file is missing")
     _require(
-        license_path.read_text(encoding="utf-8").startswith("MIT License"),
-        "Otto license file is not the MIT license",
+        wakeword.get("component") == EXPECTED_WAKEWORD_COMPONENT,
+        "wakeword component mismatch",
+    )
+    _require(
+        wakeword.get("version") == EXPECTED_WAKEWORD_VERSION,
+        "wakeword component version mismatch",
+    )
+    _require(
+        wakeword.get("component_hash") == EXPECTED_WAKEWORD_COMPONENT_HASH,
+        "wakeword component hash mismatch",
+    )
+    _require(
+        wakeword.get("repository_commit") == EXPECTED_WAKEWORD_REPOSITORY_COMMIT,
+        "wakeword repository commit mismatch",
+    )
+    _require(
+        wakeword.get("license") == EXPECTED_WAKEWORD_LICENSE,
+        "wakeword license mismatch",
+    )
+    expected_wakeword_manifest = [
+        {"name": name, "sha256": digest}
+        for name, digest in EXPECTED_WAKEWORD_FILES_SHA256.items()
+    ]
+    _require(
+        wakeword.get("files") == expected_wakeword_manifest,
+        "wakeword files do not match the pinned ESP-SR model payloads",
+    )
+
+    for _asset_file, (source_file, expected_sha) in EXPECTED_LICENSE_FILES.items():
+        license_path = root / "LICENSES" / source_file
+        _require(license_path.is_file(), f"license file is missing: {source_file}")
+        _require(
+            _sha256(license_path.read_bytes()) == expected_sha,
+            f"license SHA-256 mismatch: {source_file}",
+        )
+
+    license_files = manifest.get("license_files")
+    _require(isinstance(license_files, list), "license_files must be a list")
+    expected_license_manifest = [
+        {"asset_file": asset_file, "sha256": expected_sha}
+        for asset_file, (_source_file, expected_sha) in EXPECTED_LICENSE_FILES.items()
+    ]
+    _require(
+        license_files == expected_license_manifest,
+        "license_files do not match the pinned release licenses",
     )
 
     assets_meta = manifest.get("assets")
     _require(isinstance(assets_meta, dict), "assets must be an object")
     assets_file = assets_meta.get("file")
-    _require(isinstance(assets_file, str) and assets_file, "assets.file is required")
+    _require(assets_file == "assets.bin", "assets.file must be assets.bin")
     assets_path = _resolve_child(root, assets_file, "assets.file")
     _require(assets_path.is_file(), f"assets file is missing: {assets_file}")
     assets_payload = assets_path.read_bytes()
@@ -420,6 +527,10 @@ def validate(manifest_path: Path) -> dict[str, Any]:
             and SHA256_PATTERN.fullmatch(source_digest) is not None,
             f"emoji source_sha256 is invalid for {name}",
         )
+        _require(
+            source_digest == EXPECTED_EMOJI_SOURCE_SHA256.get(name),
+            f"emoji source_sha256 mismatch for {name}",
+        )
         manifest_by_name[name] = entry
     _require(set(manifest_by_name) == EXPECTED_EMOTIONS, "manifest emoji names do not match the canonical set")
 
@@ -433,21 +544,41 @@ def validate(manifest_path: Path) -> dict[str, Any]:
         "index.json emoji entries do not match the canonical set",
     )
 
-    expected_files = {"index.json", "srmodels.bin", EXPECTED_FONT_FILE} | {
+    expected_files = {
+        "index.json",
+        "srmodels.bin",
+        EXPECTED_FONT_FILE,
+        *EXPECTED_LICENSE_FILES,
+    } | {
         f"{name}.gif" for name in EXPECTED_EMOTIONS
     }
     _require(set(files) == expected_files, "assets contains missing or unexpected files")
     _require(_sha256(files[EXPECTED_FONT_FILE]) == font_sha, "text font sha256 mismatch")
+    for asset_file, (_source_file, expected_sha) in EXPECTED_LICENSE_FILES.items():
+        _require(
+            _sha256(files[asset_file]) == expected_sha,
+            f"embedded license SHA-256 mismatch: {asset_file}",
+        )
     for name, entry in manifest_by_name.items():
         payload = files[entry["file"]]
         _require(payload.startswith((b"GIF87a", b"GIF89a")), f"{name} is not a GIF")
         _require(_sha256(payload) == entry["sha256"], f"emoji sha256 mismatch for {name}")
 
-    model_names = _parse_model_names(files["srmodels.bin"])
+    model_names, model_files = _parse_models(files["srmodels.bin"])
     _require(
         model_names == [EXPECTED_WAKEWORD_MODEL],
         f"expected exactly one WakeNet model ({EXPECTED_WAKEWORD_MODEL}); found {model_names}",
     )
+    wakeword_files = model_files[EXPECTED_WAKEWORD_MODEL]
+    _require(
+        set(wakeword_files) == set(EXPECTED_WAKEWORD_FILES_SHA256),
+        "WakeNet model files do not match the pinned ESP-SR payload set",
+    )
+    for file_name, expected_sha in EXPECTED_WAKEWORD_FILES_SHA256.items():
+        _require(
+            _sha256(wakeword_files[file_name]) == expected_sha,
+            f"WakeNet payload SHA-256 mismatch: {file_name}",
+        )
 
     return {
         "bundle_id": manifest.get("bundle_id"),

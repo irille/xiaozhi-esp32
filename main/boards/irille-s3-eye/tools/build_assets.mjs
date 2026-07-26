@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 用固定 xiaozhi-assets-generator 模块打包 Hi ESP + Otto assets.bin。
+ * 用固定 xiaozhi-assets-generator 模块打包 Hey,Ily + Otto assets.bin。
  *
  * 输入仓库必须已 checkout 到本文件内声明的精确 commit。
  */
@@ -11,7 +11,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const GENERATOR_COMMIT = "55517b40d724014faff00f941ca700cbf9d14b51";
 const OTTO_COMMIT = "970cf66906d7c30059faa2704e7002f06b8c3619";
@@ -22,6 +22,23 @@ const FONT_SHA256 =
   "6c801b34ec686e6e31223eceedea2efe5b0cf294b3556d91087a683c86a54384";
 const FFMPEG_VERSION = "8.1.2";
 const MODEL_NAME = "wn9_hiesp";
+const LICENSE_FILES = [
+  {
+    source: "otto-emoji-gif-component.LICENSE",
+    asset: "LICENSE.otto-emoji-gif.txt",
+    sha256: "bd806361232a065ead834a53a04b34ba51eacb257ccdb21a6506f0e8738930d8",
+  },
+  {
+    source: "xiaozhi-fonts.Apache-2.0.LICENSE",
+    asset: "LICENSE.xiaozhi-fonts.txt",
+    sha256: "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+  },
+  {
+    source: "esp-sr.ESPRESSIF-MIT.LICENSE",
+    asset: "LICENSE.esp-sr.txt",
+    sha256: "4216dce10853a02d02f815e21f10a72f51de610f45fb995108f6dbada595ef70",
+  },
+];
 const EMOTIONS = [
   "neutral", "happy", "laughing", "funny", "sad", "angry", "crying",
   "loving", "embarrassed", "surprised", "shocked", "thinking", "winking",
@@ -36,7 +53,7 @@ function usage() {
   );
 }
 
-function assertCommit(repositoryPath, expected) {
+function assertSourceRepository(repositoryPath, expected) {
   const actual = execFileSync(
     "git",
     ["-C", repositoryPath, "rev-parse", "HEAD"],
@@ -47,14 +64,31 @@ function assertCommit(repositoryPath, expected) {
       `unexpected source commit for ${repositoryPath}: ${actual}; expected ${expected}`,
     );
   }
+  const status = execFileSync(
+    "git",
+    ["-C", repositoryPath, "status", "--porcelain=v1", "--untracked-files=all"],
+    { encoding: "utf8" },
+  ).trim();
+  if (status) {
+    throw new Error(`source repository is dirty: ${repositoryPath}`);
+  }
 }
 
 function sha256(payload) {
   return createHash("sha256").update(payload).digest("hex");
 }
 
-const [generatorRootArg, ottoRootArg, fontRootArg, outputArg] =
-  process.argv.slice(2);
+const arguments_ = process.argv.slice(2);
+if (arguments_[0] === "--check-repository") {
+  if (!arguments_[1] || !arguments_[2] || arguments_.length !== 3) {
+    console.error("usage: build_assets.mjs --check-repository <path> <commit>");
+    process.exit(2);
+  }
+  assertSourceRepository(path.resolve(arguments_[1]), arguments_[2]);
+  process.exit(0);
+}
+
+const [generatorRootArg, ottoRootArg, fontRootArg, outputArg] = arguments_;
 if (!generatorRootArg || !ottoRootArg || !fontRootArg || !outputArg) {
   usage();
   process.exit(2);
@@ -64,8 +98,9 @@ const generatorRoot = path.resolve(generatorRootArg);
 const ottoRoot = path.resolve(ottoRootArg);
 const fontRoot = path.resolve(fontRootArg);
 const outputPath = path.resolve(outputArg);
-assertCommit(generatorRoot, GENERATOR_COMMIT);
-assertCommit(ottoRoot, OTTO_COMMIT);
+const boardRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+assertSourceRepository(generatorRoot, GENERATOR_COMMIT);
+assertSourceRepository(ottoRoot, OTTO_COMMIT);
 
 const componentHash = (
   await fs.readFile(path.join(fontRoot, ".component_hash"), "utf8")
@@ -151,6 +186,16 @@ generator.addFile(
     fontPayload.byteOffset + fontPayload.byteLength,
   ),
 );
+for (const license of LICENSE_FILES) {
+  const payload = await fs.readFile(path.join(boardRoot, "LICENSES", license.source));
+  if (sha256(payload) !== license.sha256) {
+    throw new Error(`unexpected SHA-256 for ${license.source}`);
+  }
+  generator.addFile(
+    license.asset,
+    payload.buffer.slice(payload.byteOffset, payload.byteOffset + payload.byteLength),
+  );
+}
 
 const optimizedRoot = await fs.mkdtemp(
   path.join(os.tmpdir(), "irille-s3-eye-assets-"),

@@ -8,8 +8,27 @@
     "commit": "55517b40d724014faff00f941ca700cbf9d14b51"
   },
   "wakeword": {
-    "display": "Hi ESP",
-    "model": "wn9_hiesp"
+    "display": "Hi,ESP",
+    "model": "wn9_hiesp",
+    "component": "espressif/esp-sr",
+    "version": "2.4.7",
+    "component_hash": "809d0041cdddd98a278f0d5afef7bb60a451290577b98cf718dfffc91bdcbd9b",
+    "repository_commit": "2f8c4b0459db5bbb39abd77adae27962d6d94bcb",
+    "license": "ESPRESSIF-MIT",
+    "files": [
+      {
+        "name": "_MODEL_INFO_",
+        "sha256": "5fa834ea17d00c410bc407f0033b073d93944ad96586e0e437b71d5eb656aa59"
+      },
+      {
+        "name": "wn9_data",
+        "sha256": "2e9c1f0e7d6ecd8632baef7471896897478e49e49c1c54dcece635f54f456879"
+      },
+      {
+        "name": "wn9_index",
+        "sha256": "da36d558d0a378c0a7bdd8348a721b5898c2aa9aef27951f613cc71f7cb7c5cd"
+      }
+    ]
   },
   "emoji_source": {
     "repository": "https://github.com/txp666/otto-emoji-gif-component",
@@ -30,31 +49,150 @@
     "bpp": 4
   },
   "emoji_entries": [
-    {"name": "neutral", "file": "neutral.gif", "source_sha256": "edcb042a7ff48dcc0da0d7bafa7a08171e41ad9efe29d2bc5d552f0ed8b27eb7", "sha256": "ad1bb5de05f068420753360a67fd118b03045a1ab386bbc812af303ea1bd561f"},
-    {"name": "happy", "file": "happy.gif", "source_sha256": "9d2c6701d7a7a81208a00cf4c76ec1ca64f1f6ddc4a884b94aa489cc71c120a3", "sha256": "a2414297b0d9323d0be76f5a44b31f235e578d4f48df64394308baf2f0351b86"},
-    {"name": "laughing", "file": "laughing.gif", "source_sha256": "2e571fdc66c48db6a00de204578bbe6eda71ae6a21953981cbc68be3ba733996", "sha256": "de168b83eb18d3f4e48492dd245a1c43127421449a9c42b81f16a866e66c774b"},
-    {"name": "funny", "file": "funny.gif", "source_sha256": "b3020524fcea2bcdb311bd84b0e6aa87000fbf4caf5f512e4918acc506bf8808", "sha256": "7eeba6c6d0ddfc30b8c6d6cf4d01979948d042949db987f36351ad9a78b7c16c"},
-    {"name": "sad", "file": "sad.gif", "source_sha256": "6fc08f07bc2275479ed692c0ae5f8c0fce761925696129fc233645df895b5cfb", "sha256": "025d04e0275d3700f4e666fac9e93dbcb4fe510e15e5e88df24b7940fb0351cd"},
-    {"name": "angry", "file": "angry.gif", "source_sha256": "d67aeb6d7a8c5678cbc472757bf5bd5565967d70fc46e780a9ae260c738679b1", "sha256": "b5377732bdcdd23a126474b3358120d870b81a1a6be75df4385c87714967812a"},
-    {"name": "crying", "file": "crying.gif", "source_sha256": "cad138dec2d92292df6d1d053375484d620e9e1f51e64c5b2a4f1d1d338bcd14", "sha256": "69d3f734a357c940d4404ed4c562355ee5633d6f814e0c4e831583a659de8d44"},
-    {"name": "loving", "file": "loving.gif", "source_sha256": "3c466f82ceca7c239ea8d27a3fcb6091b63b179234c8350334fa074c0a0d7ff1", "sha256": "fce6d9bd6a24f499439a00817df105175f6205c8028ad2a39515ddb3846c4115"},
-    {"name": "embarrassed", "file": "embarrassed.gif", "source_sha256": "d9ab84a9839067e935d9db5811a0b113545f4b486ca1384a38353bb37312c915", "sha256": "2bb03a0ad6a06ba21dce84138073185058afdf80c7e1c7c9151dbe248ae0bdb2"},
-    {"name": "surprised", "file": "surprised.gif", "source_sha256": "36e782c38f3f714cdcc7d61e008d77645885115c72eee04cb9e2ffa31fa333f1", "sha256": "1a7129f3de628044c5abdc6ad115d67476683db801566050cdc51a06e277470c"},
-    {"name": "shocked", "file": "shocked.gif", "source_sha256": "45141d5822624a890bf692842695589ac7a2c6126079dcbec45d746938640c43", "sha256": "e248a8bc3c2a5a45c7cae397933bd4a8fce12bde84e8b89112bc03713e043497"},
-    {"name": "thinking", "file": "thinking.gif", "source_sha256": "105d1495832a48b17cc97782666ed6ccd766bbdbfce187f49ff17929f97f5b6c", "sha256": "c1cda62469add602315644f819e77341868565ab92657357bf98b943255bca45"},
-    {"name": "winking", "file": "winking.gif", "source_sha256": "6ed0d8757fdf6bca59e5851ea7f968b6df13f2abf6fffb0f4ba512a09e68bfd2", "sha256": "b9fe58d19ad83d5a23d37594e7faa2f6aa1a9f4cf322b26180ad7291bdd547ca"},
-    {"name": "cool", "file": "cool.gif", "source_sha256": "f332bd852f4d1ea7cc2b390626812ec0ce8171899c88bd71dd08dcc56f2bbc05", "sha256": "36296ec73a62dde3778ff78067b86ddd4a6dd4d408a8281da3cbc81d497c8346"},
-    {"name": "relaxed", "file": "relaxed.gif", "source_sha256": "ce22ef9b70f4b6602c8389c1f3080e6a479e5d7e7bd916d3c94da71ce33ae39e", "sha256": "ebc468132a28f323b5b99f84a5302fdfce6cfa3de08a957ff55620ca072d104a"},
-    {"name": "delicious", "file": "delicious.gif", "source_sha256": "23607f905f87b42ae40fe6c20e6e27ba3acf4700c803686606a8cb60b9e2eb93", "sha256": "691b8f273b9b536ad6e17b45ce86c9b6be164a9cc6a0e7b043dedfb39738b0cd"},
-    {"name": "kissy", "file": "kissy.gif", "source_sha256": "5a5f9067bc21e71813d0c9c6a0c17289dfc31f35459483e4ad131a3e1e029403", "sha256": "7b40aa15159677aeb153ff9772b0722d172b1a5db4cdbb739c701035093b4f3b"},
-    {"name": "confident", "file": "confident.gif", "source_sha256": "2f498822df14c6d4654d6d4a9db87ba9ce55b625bea7484dad07164bbe0e15e9", "sha256": "b9967bc3d80553eeb70acc18c696c409e3171a5a472fe4595f94fc206b503432"},
-    {"name": "sleepy", "file": "sleepy.gif", "source_sha256": "6a3f0622163ceec2a3698b77a644b3fe6e227b81432ec49c3373bfcc3d1b035c", "sha256": "ece6abf24887969881e7c49ba1c56faaa3d24b43c5d8b44bee49104d89cae8fa"},
-    {"name": "silly", "file": "silly.gif", "source_sha256": "9a1573f1dabe504d283c5f3ae9a5be2fbeba8355b6a644917551bf086165ba8b", "sha256": "77854972fce30700736c56afda948bc05883d5630c30c13397af391ebb514d47"},
-    {"name": "confused", "file": "confused.gif", "source_sha256": "244a67c812f8b6a39681258a16f38249f7c47d496ed77c7731ab6d5069ac0fab", "sha256": "b0ea4e618d37f57c45b9da19de766cc575af315f8c8096edcc79dbc312a41415"}
+    {
+      "name": "neutral",
+      "file": "neutral.gif",
+      "source_sha256": "edcb042a7ff48dcc0da0d7bafa7a08171e41ad9efe29d2bc5d552f0ed8b27eb7",
+      "sha256": "ad1bb5de05f068420753360a67fd118b03045a1ab386bbc812af303ea1bd561f"
+    },
+    {
+      "name": "happy",
+      "file": "happy.gif",
+      "source_sha256": "9d2c6701d7a7a81208a00cf4c76ec1ca64f1f6ddc4a884b94aa489cc71c120a3",
+      "sha256": "a2414297b0d9323d0be76f5a44b31f235e578d4f48df64394308baf2f0351b86"
+    },
+    {
+      "name": "laughing",
+      "file": "laughing.gif",
+      "source_sha256": "2e571fdc66c48db6a00de204578bbe6eda71ae6a21953981cbc68be3ba733996",
+      "sha256": "de168b83eb18d3f4e48492dd245a1c43127421449a9c42b81f16a866e66c774b"
+    },
+    {
+      "name": "funny",
+      "file": "funny.gif",
+      "source_sha256": "b3020524fcea2bcdb311bd84b0e6aa87000fbf4caf5f512e4918acc506bf8808",
+      "sha256": "7eeba6c6d0ddfc30b8c6d6cf4d01979948d042949db987f36351ad9a78b7c16c"
+    },
+    {
+      "name": "sad",
+      "file": "sad.gif",
+      "source_sha256": "6fc08f07bc2275479ed692c0ae5f8c0fce761925696129fc233645df895b5cfb",
+      "sha256": "025d04e0275d3700f4e666fac9e93dbcb4fe510e15e5e88df24b7940fb0351cd"
+    },
+    {
+      "name": "angry",
+      "file": "angry.gif",
+      "source_sha256": "d67aeb6d7a8c5678cbc472757bf5bd5565967d70fc46e780a9ae260c738679b1",
+      "sha256": "b5377732bdcdd23a126474b3358120d870b81a1a6be75df4385c87714967812a"
+    },
+    {
+      "name": "crying",
+      "file": "crying.gif",
+      "source_sha256": "cad138dec2d92292df6d1d053375484d620e9e1f51e64c5b2a4f1d1d338bcd14",
+      "sha256": "69d3f734a357c940d4404ed4c562355ee5633d6f814e0c4e831583a659de8d44"
+    },
+    {
+      "name": "loving",
+      "file": "loving.gif",
+      "source_sha256": "3c466f82ceca7c239ea8d27a3fcb6091b63b179234c8350334fa074c0a0d7ff1",
+      "sha256": "fce6d9bd6a24f499439a00817df105175f6205c8028ad2a39515ddb3846c4115"
+    },
+    {
+      "name": "embarrassed",
+      "file": "embarrassed.gif",
+      "source_sha256": "d9ab84a9839067e935d9db5811a0b113545f4b486ca1384a38353bb37312c915",
+      "sha256": "2bb03a0ad6a06ba21dce84138073185058afdf80c7e1c7c9151dbe248ae0bdb2"
+    },
+    {
+      "name": "surprised",
+      "file": "surprised.gif",
+      "source_sha256": "36e782c38f3f714cdcc7d61e008d77645885115c72eee04cb9e2ffa31fa333f1",
+      "sha256": "1a7129f3de628044c5abdc6ad115d67476683db801566050cdc51a06e277470c"
+    },
+    {
+      "name": "shocked",
+      "file": "shocked.gif",
+      "source_sha256": "45141d5822624a890bf692842695589ac7a2c6126079dcbec45d746938640c43",
+      "sha256": "e248a8bc3c2a5a45c7cae397933bd4a8fce12bde84e8b89112bc03713e043497"
+    },
+    {
+      "name": "thinking",
+      "file": "thinking.gif",
+      "source_sha256": "105d1495832a48b17cc97782666ed6ccd766bbdbfce187f49ff17929f97f5b6c",
+      "sha256": "c1cda62469add602315644f819e77341868565ab92657357bf98b943255bca45"
+    },
+    {
+      "name": "winking",
+      "file": "winking.gif",
+      "source_sha256": "6ed0d8757fdf6bca59e5851ea7f968b6df13f2abf6fffb0f4ba512a09e68bfd2",
+      "sha256": "b9fe58d19ad83d5a23d37594e7faa2f6aa1a9f4cf322b26180ad7291bdd547ca"
+    },
+    {
+      "name": "cool",
+      "file": "cool.gif",
+      "source_sha256": "f332bd852f4d1ea7cc2b390626812ec0ce8171899c88bd71dd08dcc56f2bbc05",
+      "sha256": "36296ec73a62dde3778ff78067b86ddd4a6dd4d408a8281da3cbc81d497c8346"
+    },
+    {
+      "name": "relaxed",
+      "file": "relaxed.gif",
+      "source_sha256": "ce22ef9b70f4b6602c8389c1f3080e6a479e5d7e7bd916d3c94da71ce33ae39e",
+      "sha256": "ebc468132a28f323b5b99f84a5302fdfce6cfa3de08a957ff55620ca072d104a"
+    },
+    {
+      "name": "delicious",
+      "file": "delicious.gif",
+      "source_sha256": "23607f905f87b42ae40fe6c20e6e27ba3acf4700c803686606a8cb60b9e2eb93",
+      "sha256": "691b8f273b9b536ad6e17b45ce86c9b6be164a9cc6a0e7b043dedfb39738b0cd"
+    },
+    {
+      "name": "kissy",
+      "file": "kissy.gif",
+      "source_sha256": "5a5f9067bc21e71813d0c9c6a0c17289dfc31f35459483e4ad131a3e1e029403",
+      "sha256": "7b40aa15159677aeb153ff9772b0722d172b1a5db4cdbb739c701035093b4f3b"
+    },
+    {
+      "name": "confident",
+      "file": "confident.gif",
+      "source_sha256": "2f498822df14c6d4654d6d4a9db87ba9ce55b625bea7484dad07164bbe0e15e9",
+      "sha256": "b9967bc3d80553eeb70acc18c696c409e3171a5a472fe4595f94fc206b503432"
+    },
+    {
+      "name": "sleepy",
+      "file": "sleepy.gif",
+      "source_sha256": "6a3f0622163ceec2a3698b77a644b3fe6e227b81432ec49c3373bfcc3d1b035c",
+      "sha256": "ece6abf24887969881e7c49ba1c56faaa3d24b43c5d8b44bee49104d89cae8fa"
+    },
+    {
+      "name": "silly",
+      "file": "silly.gif",
+      "source_sha256": "9a1573f1dabe504d283c5f3ae9a5be2fbeba8355b6a644917551bf086165ba8b",
+      "sha256": "77854972fce30700736c56afda948bc05883d5630c30c13397af391ebb514d47"
+    },
+    {
+      "name": "confused",
+      "file": "confused.gif",
+      "source_sha256": "244a67c812f8b6a39681258a16f38249f7c47d496ed77c7731ab6d5069ac0fab",
+      "sha256": "b0ea4e618d37f57c45b9da19de766cc575af315f8c8096edcc79dbc312a41415"
+    }
+  ],
+  "license_files": [
+    {
+      "asset_file": "LICENSE.otto-emoji-gif.txt",
+      "sha256": "bd806361232a065ead834a53a04b34ba51eacb257ccdb21a6506f0e8738930d8"
+    },
+    {
+      "asset_file": "LICENSE.xiaozhi-fonts.txt",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    {
+      "asset_file": "LICENSE.esp-sr.txt",
+      "sha256": "4216dce10853a02d02f815e21f10a72f51de610f45fb995108f6dbada595ef70"
+    }
   ],
   "assets": {
     "file": "assets.bin",
-    "size_bytes": 1827010,
-    "sha256": "11c678b3d9719134442b85397e976ba65e090c188e73d17cf07938f1c3cb6a22"
+    "size_bytes": 1840752,
+    "sha256": "4b1aeef5c11389ea9ed58ba298d53af3774512b826dbce92699fd55fdbff813a"
   }
 }

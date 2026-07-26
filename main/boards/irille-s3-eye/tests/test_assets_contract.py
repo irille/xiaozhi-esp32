@@ -10,6 +10,7 @@ import unittest
 
 BOARD_DIR = Path(__file__).resolve().parents[1]
 VALIDATOR = BOARD_DIR / "tools" / "validate_assets.py"
+BUILDER = BOARD_DIR / "tools" / "build_assets.mjs"
 EXPECTED_EMOTIONS = {
     "neutral",
     "happy",
@@ -35,6 +36,16 @@ EXPECTED_EMOTIONS = {
 }
 
 
+def _expected_source_sha256() -> dict[str, str]:
+    manifest = json.loads(
+        (BOARD_DIR / "assets-manifest.json").read_text(encoding="utf-8")
+    )
+    return {
+        entry["name"]: entry["source_sha256"]
+        for entry in manifest["emoji_entries"]
+    }
+
+
 def _fixed_string(value: str, size: int = 32) -> bytes:
     encoded = value.encode("utf-8")
     if len(encoded) > size:
@@ -42,22 +53,72 @@ def _fixed_string(value: str, size: int = 32) -> bytes:
     return encoded.ljust(size, b"\0")
 
 
-def _build_srmodels(model_names: list[str]) -> bytes:
-    file_name = "_MODEL_INFO_"
-    payloads = [f"model:{name}".encode() for name in model_names]
-    header_size = 4 + len(model_names) * (32 + 4 + 32 + 4 + 4)
+def _parse_srmodel_files(payload: bytes) -> dict[str, dict[str, bytes]]:
+    model_count = struct.unpack_from("<I", payload)[0]
+    cursor = 4
+    entries: list[tuple[str, list[tuple[str, int, int]]]] = []
+    for _ in range(model_count):
+        model_name = payload[cursor : cursor + 32].split(b"\0", 1)[0].decode()
+        cursor += 32
+        file_count = struct.unpack_from("<I", payload, cursor)[0]
+        cursor += 4
+        files: list[tuple[str, int, int]] = []
+        for _ in range(file_count):
+            file_name = payload[cursor : cursor + 32].split(b"\0", 1)[0].decode()
+            start, size = struct.unpack_from("<II", payload, cursor + 32)
+            cursor += 40
+            files.append((file_name, start, size))
+        entries.append((model_name, files))
+    return {
+        model_name: {
+            file_name: payload[start : start + size]
+            for file_name, start, size in files
+        }
+        for model_name, files in entries
+    }
+
+
+def _canonical_wakeword_files() -> dict[str, bytes]:
+    assets = _parse_assets_files((BOARD_DIR / "assets.bin").read_bytes())
+    return _parse_srmodel_files(assets["srmodels.bin"])["wn9_hiesp"]
+
+
+def _build_srmodels(
+    model_names: list[str],
+    *,
+    substitute_expected_model: bool = False,
+    append_unreferenced_data: bool = False,
+) -> bytes:
+    models: list[tuple[str, dict[str, bytes]]] = []
+    for model_name in model_names:
+        if model_name == "wn9_hiesp":
+            files = _canonical_wakeword_files()
+            if substitute_expected_model:
+                files = {**files, "wn9_data": b"substituted WakeNet payload"}
+        else:
+            files = {"_MODEL_INFO_": f"model:{model_name}".encode()}
+        models.append((model_name, files))
+    header_size = 4 + sum(
+        32 + 4 + len(files) * (32 + 4 + 4) for _model_name, files in models
+    )
     headers = bytearray(struct.pack("<I", len(model_names)))
     data = bytearray()
-    for model_name, payload in zip(model_names, payloads, strict=True):
+    for model_name, files in models:
         headers.extend(_fixed_string(model_name))
-        headers.extend(struct.pack("<I", 1))
-        headers.extend(_fixed_string(file_name))
-        headers.extend(struct.pack("<II", header_size + len(data), len(payload)))
-        data.extend(payload)
-    return bytes(headers + data)
+        headers.extend(struct.pack("<I", len(files)))
+        for file_name, payload in files.items():
+            headers.extend(_fixed_string(file_name))
+            headers.extend(struct.pack("<II", header_size + len(data), len(payload)))
+            data.extend(payload)
+    payload = bytes(headers + data)
+    if append_unreferenced_data:
+        payload += b"unreferenced model data"
+    return payload
 
 
-def _build_assets(files: dict[str, bytes]) -> bytes:
+def _build_assets(
+    files: dict[str, bytes], *, append_unreferenced_data: bool = False
+) -> bytes:
     table = bytearray()
     merged = bytearray()
     for file_name, payload in files.items():
@@ -67,12 +128,49 @@ def _build_assets(files: dict[str, bytes]) -> bytes:
         table.extend(_fixed_string(file_name))
         table.extend(struct.pack("<IIHH", len(payload), offset, 0, 0))
     combined = table + merged
+    if append_unreferenced_data:
+        combined += b"unreferenced asset data"
     checksum = sum(combined) & 0xFFFF
     return struct.pack("<III", len(files), checksum, len(combined)) + combined
 
 
-def _write_bundle(root: Path, model_names: list[str]) -> Path:
-    font_payload = b"synthetic common font"
+def _parse_assets_files(payload: bytes) -> dict[str, bytes]:
+    file_count, _checksum, _combined_size = struct.unpack_from("<III", payload)
+    table = payload[12 : 12 + file_count * 44]
+    data = payload[12 + file_count * 44 :]
+    files: dict[str, bytes] = {}
+    for index in range(file_count):
+        entry = table[index * 44 : (index + 1) * 44]
+        name = entry[:32].split(b"\0", 1)[0].decode("utf-8")
+        size, offset = struct.unpack_from("<II", entry, 32)
+        files[name] = data[offset + 2 : offset + 2 + size]
+    return files
+
+
+def _write_bundle(
+    root: Path,
+    model_names: list[str],
+    *,
+    substitute_expected_model: bool = False,
+    substitute_expected_font: bool = False,
+    append_unreferenced_asset_data: bool = False,
+    append_unreferenced_model_data: bool = False,
+) -> Path:
+    canonical_assets = _parse_assets_files((BOARD_DIR / "assets.bin").read_bytes())
+    font_payload = canonical_assets["font_noto_sans_common_16_4.bin"]
+    if substitute_expected_font:
+        font_payload = b"substituted common font"
+    license_payloads = {
+        "LICENSE.otto-emoji-gif.txt": (
+            BOARD_DIR / "LICENSES" / "otto-emoji-gif-component.LICENSE"
+        ).read_bytes(),
+        "LICENSE.xiaozhi-fonts.txt": (
+            BOARD_DIR / "LICENSES" / "xiaozhi-fonts.Apache-2.0.LICENSE"
+        ).read_bytes(),
+        "LICENSE.esp-sr.txt": (
+            BOARD_DIR / "LICENSES" / "esp-sr.ESPRESSIF-MIT.LICENSE"
+        ).read_bytes(),
+    }
     emoji_payloads = {
         name: b"GIF89a" + name.encode("ascii") for name in sorted(EXPECTED_EMOTIONS)
     }
@@ -93,16 +191,32 @@ def _write_bundle(root: Path, model_names: list[str]) -> Path:
     }
     files = {
         "index.json": json.dumps(index, separators=(",", ":")).encode(),
-        "srmodels.bin": _build_srmodels(model_names),
+        "srmodels.bin": _build_srmodels(
+            model_names,
+            substitute_expected_model=substitute_expected_model,
+            append_unreferenced_data=append_unreferenced_model_data,
+        ),
         "font_noto_sans_common_16_4.bin": font_payload,
+        **license_payloads,
         **{f"{name}.gif": payload for name, payload in emoji_payloads.items()},
     }
-    assets = _build_assets(files)
+    assets = _build_assets(
+        files, append_unreferenced_data=append_unreferenced_asset_data
+    )
     assets_path = root / "assets.bin"
     assets_path.write_bytes(assets)
     (root / "LICENSES").mkdir()
     (root / "LICENSES" / "otto-emoji-gif-component.LICENSE").write_text(
-        "MIT License\n", encoding="utf-8"
+        (BOARD_DIR / "LICENSES" / "otto-emoji-gif-component.LICENSE").read_text(
+            encoding="utf-8"
+        ),
+        encoding="utf-8",
+    )
+    (root / "LICENSES" / "xiaozhi-fonts.Apache-2.0.LICENSE").write_bytes(
+        (BOARD_DIR / "LICENSES" / "xiaozhi-fonts.Apache-2.0.LICENSE").read_bytes()
+    )
+    (root / "LICENSES" / "esp-sr.ESPRESSIF-MIT.LICENSE").write_bytes(
+        (BOARD_DIR / "LICENSES" / "esp-sr.ESPRESSIF-MIT.LICENSE").read_bytes()
     )
     manifest = {
         "schema_version": 1,
@@ -113,7 +227,31 @@ def _write_bundle(root: Path, model_names: list[str]) -> Path:
             "repository": "https://github.com/78/xiaozhi-assets-generator",
             "commit": "55517b40d724014faff00f941ca700cbf9d14b51",
         },
-        "wakeword": {"display": "Hi ESP", "model": "wn9_hiesp"},
+        "wakeword": {
+            "display": "Hi,ESP",
+            "model": "wn9_hiesp",
+            "component": "espressif/esp-sr",
+            "version": "2.4.7",
+            "component_hash": (
+                "809d0041cdddd98a278f0d5afef7bb60a451290577b98cf718dfffc91bdcbd9b"
+            ),
+            "repository_commit": "2f8c4b0459db5bbb39abd77adae27962d6d94bcb",
+            "license": "ESPRESSIF-MIT",
+            "files": [
+                {
+                    "name": "_MODEL_INFO_",
+                    "sha256": "5fa834ea17d00c410bc407f0033b073d93944ad96586e0e437b71d5eb656aa59",
+                },
+                {
+                    "name": "wn9_data",
+                    "sha256": "2e9c1f0e7d6ecd8632baef7471896897478e49e49c1c54dcece635f54f456879",
+                },
+                {
+                    "name": "wn9_index",
+                    "sha256": "da36d558d0a378c0a7bdd8348a721b5898c2aa9aef27951f613cc71f7cb7c5cd",
+                },
+            ],
+        },
         "emoji_source": {
             "repository": "https://github.com/txp666/otto-emoji-gif-component",
             "commit": "970cf66906d7c30059faa2704e7002f06b8c3619",
@@ -138,10 +276,17 @@ def _write_bundle(root: Path, model_names: list[str]) -> Path:
             {
                 "name": name,
                 "file": f"{name}.gif",
-                "source_sha256": hashlib.sha256(payload).hexdigest(),
+                "source_sha256": _expected_source_sha256()[name],
                 "sha256": hashlib.sha256(payload).hexdigest(),
             }
             for name, payload in sorted(emoji_payloads.items())
+        ],
+        "license_files": [
+            {
+                "asset_file": asset_file,
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+            for asset_file, payload in license_payloads.items()
         ],
         "assets": {
             "file": "assets.bin",
@@ -200,6 +345,23 @@ def _run_candidate_validator(candidate_path: Path) -> subprocess.CompletedProces
     )
 
 
+def _run_repository_check(
+    repository_path: Path, expected_commit: str
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "node",
+            str(BUILDER),
+            "--check-repository",
+            str(repository_path),
+            expected_commit,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
 class AssetsValidatorTests(unittest.TestCase):
     def test_accepts_valid_synthetic_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -216,6 +378,17 @@ class AssetsValidatorTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("exactly one WakeNet model", result.stderr)
 
+    def test_rejects_substituted_pinned_wakenet_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            manifest = _write_bundle(
+                Path(temp),
+                ["wn9_hiesp"],
+                substitute_expected_model=True,
+            )
+            result = _run_validator(manifest)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("WakeNet payload SHA-256 mismatch", result.stderr)
+
     def test_rejects_corrupt_assets_checksum(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -231,6 +404,28 @@ class AssetsValidatorTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("checksum", result.stderr)
 
+    def test_rejects_unreferenced_assets_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            manifest = _write_bundle(
+                Path(temp),
+                ["wn9_hiesp"],
+                append_unreferenced_asset_data=True,
+            )
+            result = _run_validator(manifest)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("assets data ends with unreferenced bytes", result.stderr)
+
+    def test_rejects_unreferenced_srmodels_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            manifest = _write_bundle(
+                Path(temp),
+                ["wn9_hiesp"],
+                append_unreferenced_model_data=True,
+            )
+            result = _run_validator(manifest)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("srmodels data ends with unreferenced bytes", result.stderr)
+
     def test_rejects_wrong_font_repository_commit(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -241,6 +436,89 @@ class AssetsValidatorTests(unittest.TestCase):
             result = _run_validator(manifest)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("text font repository commit mismatch", result.stderr)
+
+    def test_rejects_substituted_pinned_font_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            manifest = _write_bundle(
+                Path(temp),
+                ["wn9_hiesp"],
+                substitute_expected_font=True,
+            )
+            result = _run_validator(manifest)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("text font SHA-256 mismatch", result.stderr)
+
+    def test_rejects_assets_filename_that_build_does_not_flash(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            manifest = _write_bundle(root, ["wn9_hiesp"])
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+            (root / "candidate.bin").write_bytes((root / "assets.bin").read_bytes())
+            data["assets"]["file"] = "candidate.bin"
+            manifest.write_text(json.dumps(data), encoding="utf-8")
+            result = _run_validator(manifest)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("assets.file must be assets.bin", result.stderr)
+
+    def test_rejects_source_hash_that_does_not_match_pinned_otto_input(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            manifest = _write_bundle(root, ["wn9_hiesp"])
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+            data["emoji_entries"][0]["source_sha256"] = "0" * 64
+            manifest.write_text(json.dumps(data), encoding="utf-8")
+            result = _run_validator(manifest)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("emoji source_sha256 mismatch", result.stderr)
+
+    def test_rejects_truncated_otto_license(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            manifest = _write_bundle(root, ["wn9_hiesp"])
+            (root / "LICENSES" / "otto-emoji-gif-component.LICENSE").write_text(
+                "MIT License\nnot the pinned license\n", encoding="utf-8"
+            )
+            result = _run_validator(manifest)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(
+                "license SHA-256 mismatch: otto-emoji-gif-component.LICENSE",
+                result.stderr,
+            )
+
+    def test_rejects_dirty_pinned_source_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            tracked = root / "tracked.txt"
+            tracked.write_text("pinned\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "tracked.txt"], check=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(root),
+                    "-c",
+                    "user.name=Asset Test",
+                    "-c",
+                    "user.email=asset-test@example.invalid",
+                    "commit",
+                    "-q",
+                    "-m",
+                    "fixture",
+                ],
+                check=True,
+            )
+            expected_commit = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            self.assertEqual(_run_repository_check(root, expected_commit).returncode, 0)
+            tracked.write_text("modified\n", encoding="utf-8")
+            result = _run_repository_check(root, expected_commit)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("source repository is dirty", result.stderr)
 
 
 class WakeWordCandidateTests(unittest.TestCase):
@@ -335,16 +613,54 @@ class BoardContractTests(unittest.TestCase):
             },
         )
 
+    def test_real_bundle_embeds_required_third_party_licenses(self) -> None:
+        files = _parse_assets_files((BOARD_DIR / "assets.bin").read_bytes())
+        for file_name, local_name in (
+            ("LICENSE.otto-emoji-gif.txt", "otto-emoji-gif-component.LICENSE"),
+            ("LICENSE.xiaozhi-fonts.txt", "xiaozhi-fonts.Apache-2.0.LICENSE"),
+            ("LICENSE.esp-sr.txt", "esp-sr.ESPRESSIF-MIT.LICENSE"),
+        ):
+            self.assertIn(file_name, files)
+            self.assertEqual(
+                files[file_name], (BOARD_DIR / "LICENSES" / local_name).read_bytes()
+            )
+
     def test_board_selects_only_hi_esp_custom_assets(self) -> None:
         config = json.loads((BOARD_DIR / "config.json").read_text(encoding="utf-8"))
         self.assertEqual(len(config["builds"]), 1)
         sdkconfig = set(config["builds"][0]["sdkconfig_append"])
-        self.assertIn("CONFIG_SR_WN_WN9_NIHAOXIAOZHI_TTS=n", sdkconfig)
         self.assertIn("CONFIG_SR_WN_WN9_HIESP=y", sdkconfig)
+        # 其余唤醒模型必须显式关闭，assets 里只允许打包一个 WakeNet 模型。
+        self.assertIn("CONFIG_SR_WN_WN9_NIHAOXIAOZHI_TTS=n", sdkconfig)
+        self.assertIn("CONFIG_SR_WN_WN9_SOPHIA_TTS=n", sdkconfig)
+        self.assertIn("CONFIG_SR_WN_WN9_HEYILY_TTS2=n", sdkconfig)
         self.assertIn("CONFIG_FLASH_CUSTOM_ASSETS=y", sdkconfig)
         self.assertIn(
             'CONFIG_CUSTOM_ASSETS_FILE="boards/irille-s3-eye/assets.bin"',
             sdkconfig,
+        )
+
+    def test_board_pins_ota_url_to_testbench(self) -> None:
+        """OTA 地址必须编译期定死，不能只依赖 nvs。
+
+        nvs 一旦被清（如全片重刷），ota.cc 会回退到 CONFIG_OTA_URL；若该值仍是
+        上游默认的官方地址，设备会连回 api.tenclass.net。
+        """
+        config = json.loads((BOARD_DIR / "config.json").read_text(encoding="utf-8"))
+        sdkconfig = set(config["builds"][0]["sdkconfig_append"])
+        self.assertIn(
+            'CONFIG_OTA_URL="http://192.168.1.48:8003/xiaozhi/ota/"',
+            sdkconfig,
+        )
+
+    def test_board_ships_no_audio_debugger(self) -> None:
+        """诊断用的 audio debugger 不得随固件发布——它会把麦克风原始音频
+        持续外发到硬编码 IP。"""
+        config = json.loads((BOARD_DIR / "config.json").read_text(encoding="utf-8"))
+        entries = config["builds"][0]["sdkconfig_append"]
+        self.assertEqual(
+            [e for e in entries if "AUDIO_DEBUG" in e],
+            [],
         )
 
     def test_real_manifest_provenance_schema_is_complete(self) -> None:
@@ -363,10 +679,30 @@ class BoardContractTests(unittest.TestCase):
                 "emoji_source",
                 "text_font",
                 "emoji_entries",
+                "license_files",
                 "assets",
             },
         )
         self.assertEqual(set(manifest["generator"]), {"repository", "commit"})
+        self.assertEqual(
+            set(manifest["wakeword"]),
+            {
+                "display",
+                "model",
+                "component",
+                "version",
+                "component_hash",
+                "repository_commit",
+                "license",
+                "files",
+            },
+        )
+        self.assertEqual(
+            {entry["name"] for entry in manifest["wakeword"]["files"]},
+            {"_MODEL_INFO_", "wn9_data", "wn9_index"},
+        )
+        for entry in manifest["wakeword"]["files"]:
+            self.assertEqual(set(entry), {"name", "sha256"})
         self.assertEqual(
             set(manifest["emoji_source"]), {"repository", "commit", "license"}
         )
@@ -387,6 +723,8 @@ class BoardContractTests(unittest.TestCase):
             },
         )
         self.assertEqual(set(manifest["assets"]), {"file", "size_bytes", "sha256"})
+        for entry in manifest["license_files"]:
+            self.assertEqual(set(entry), {"asset_file", "sha256"})
         for entry in manifest["emoji_entries"]:
             self.assertEqual(
                 set(entry), {"name", "file", "source_sha256", "sha256"}
@@ -401,8 +739,12 @@ class BoardContractTests(unittest.TestCase):
             "d45dbc64052d57048f20ab1770074172ce9eb53b",
             "MIT",
             "Apache-2.0",
+            "2f8c4b0459db5bbb39abd77adae27962d6d94bcb",
+            "ESPRESSIF-MIT",
             "CONFIG_SR_WN_WN9_NIHAOXIAOZHI_TTS=n",
-            "CONFIG_SR_WN_WN9_HIESP=y",
+            "CONFIG_SR_WN_WN9_HIESP=n",
+            "CONFIG_SR_WN_WN9_SOPHIA_TTS=n",
+            "CONFIG_SR_WN_WN9_HEYILY_TTS2=y",
             "CONFIG_FLASH_CUSTOM_ASSETS=y",
             'CONFIG_CUSTOM_ASSETS_FILE="boards/irille-s3-eye/assets.bin"',
             "重刷 assets 分区",
