@@ -11,7 +11,6 @@
                 "CONFIG_SR_WN_WN9_HIESP=n",
                 "CONFIG_SR_WN_WN9_SOPHIA_TTS=n",
                 "CONFIG_SR_WN_WN9_HEYILY_TTS2=y",
-                "CONFIG_WAKENET_DET_THRESHOLD_PERCENT=63",
                 "CONFIG_USE_AUDIO_DEBUGGER=y",
                 "CONFIG_AUDIO_DEBUG_UDP_SERVER=\"192.168.1.157:9999\"",
                 "CONFIG_FLASH_CUSTOM_ASSETS=y",

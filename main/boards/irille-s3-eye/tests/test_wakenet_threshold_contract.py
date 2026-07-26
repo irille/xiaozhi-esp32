@@ -11,20 +11,18 @@ AFE_ENGINE = MAIN_DIR / "audio" / "engines" / "afe_audio_engine.cc"
 
 
 class WakeNetThresholdContractTests(unittest.TestCase):
-    def test_board_uses_official_calibrated_threshold(self) -> None:
+    def test_board_does_not_override_model_threshold(self) -> None:
+        """board 不覆盖模型阈值，让 WakeNet 按模型自带的标定值工作。
+
+        #20 引入的 set_wakenet_threshold() 是**运行时覆盖调用**，与模型内置
+        标定值并不等价：实测同为 0.63，显式覆盖时召回 0/8，而 #17 未覆盖时
+        召回 6/6。配置为 0（或缺席）时该段代码不编译，从不调用该 API。
+        """
         config = json.loads((BOARD_DIR / "config.json").read_text(encoding="utf-8"))
         entries = config["builds"][0]["sdkconfig_append"]
-        sdkconfig = set(entries)
 
-        self.assertIn("CONFIG_WAKENET_DET_THRESHOLD_PERCENT=63", sdkconfig)
-        # 旧值必须已移除：仅断言新值存在时，配置同时残留 53 与 63 也会通过。
-        self.assertNotIn("CONFIG_WAKENET_DET_THRESHOLD_PERCENT=53", sdkconfig)
-        # 声明必须唯一，否则后一条会静默覆盖前一条。
         prefix = "CONFIG_WAKENET_DET_THRESHOLD_PERCENT="
-        self.assertEqual(
-            sum(1 for entry in entries if entry.startswith(prefix)),
-            1,
-        )
+        self.assertEqual([e for e in entries if e.startswith(prefix)], [])
 
     def test_kconfig_defaults_to_disabled_and_documents_valid_range(self) -> None:
         kconfig = KCONFIG.read_text(encoding="utf-8")
