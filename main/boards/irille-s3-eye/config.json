@@ -11,7 +11,7 @@
                 "CONFIG_SR_WN_WN9_HIESP=n",
                 "CONFIG_SR_WN_WN9_SOPHIA_TTS=n",
                 "CONFIG_SR_WN_WN9_HEYILY_TTS2=y",
-                "CONFIG_WAKENET_DET_THRESHOLD_PERCENT=56",
+                "CONFIG_WAKENET_DET_THRESHOLD_PERCENT=53",
                 "CONFIG_FLASH_CUSTOM_ASSETS=y",
                 "CONFIG_CUSTOM_ASSETS_FILE=\"boards/irille-s3-eye/assets.bin\"",
                 "CONFIG_CAMERA_OV2640=y",

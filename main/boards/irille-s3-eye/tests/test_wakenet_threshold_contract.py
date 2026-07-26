@@ -11,14 +11,14 @@ AFE_ENGINE = MAIN_DIR / "audio" / "engines" / "afe_audio_engine.cc"
 
 
 class WakeNetThresholdContractTests(unittest.TestCase):
-    def test_board_enables_fifty_six_percent_threshold(self) -> None:
+    def test_board_enables_fifty_three_percent_threshold(self) -> None:
         config = json.loads((BOARD_DIR / "config.json").read_text(encoding="utf-8"))
         entries = config["builds"][0]["sdkconfig_append"]
         sdkconfig = set(entries)
 
-        self.assertIn("CONFIG_WAKENET_DET_THRESHOLD_PERCENT=56", sdkconfig)
-        # 旧值必须已移除：仅断言新值存在时，配置同时残留 53 与 56 也会通过。
-        self.assertNotIn("CONFIG_WAKENET_DET_THRESHOLD_PERCENT=53", sdkconfig)
+        self.assertIn("CONFIG_WAKENET_DET_THRESHOLD_PERCENT=53", sdkconfig)
+        # 旧值必须已移除：仅断言新值存在时，配置同时残留 56 与 53 也会通过。
+        self.assertNotIn("CONFIG_WAKENET_DET_THRESHOLD_PERCENT=56", sdkconfig)
         # 声明必须唯一，否则后一条会静默覆盖前一条。
         prefix = "CONFIG_WAKENET_DET_THRESHOLD_PERCENT="
         self.assertEqual(
