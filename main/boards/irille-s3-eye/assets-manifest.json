@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "bundle_id": "irille-s3-eye-hi-esp-otto-v1",
+  "bundle_id": "irille-s3-eye-hey-ily-otto-v1",
   "target_board": "irille-s3-eye",
   "partition_limit_bytes": 2097152,
   "generator": {
@@ -8,8 +8,18 @@
     "commit": "55517b40d724014faff00f941ca700cbf9d14b51"
   },
   "wakeword": {
-    "display": "Hi ESP",
-    "model": "wn9_hiesp"
+    "display": "Hey,Ily",
+    "model": "wn9_heyily_tts2",
+    "component": "espressif/esp-sr",
+    "version": "2.4.7",
+    "component_hash": "809d0041cdddd98a278f0d5afef7bb60a451290577b98cf718dfffc91bdcbd9b",
+    "repository_commit": "2f8c4b0459db5bbb39abd77adae27962d6d94bcb",
+    "license": "ESPRESSIF-MIT",
+    "files": [
+      {"name": "_MODEL_INFO_", "sha256": "dc4db6b880e0d9511575e93c13e2bc61167076650c4ffdd576c82d59fa67a4e8"},
+      {"name": "wn9_data", "sha256": "3ea182aa12253d6acd3e8c5c48037150568b0f9fcfb8a5bbfc614fce4b25f4a2"},
+      {"name": "wn9_index", "sha256": "f13338e279d66ecbac972424a3be4c6184708e6019b9aae613243e83bc6230f9"}
+    ]
   },
   "emoji_source": {
     "repository": "https://github.com/txp666/otto-emoji-gif-component",
@@ -52,9 +62,14 @@
     {"name": "silly", "file": "silly.gif", "source_sha256": "9a1573f1dabe504d283c5f3ae9a5be2fbeba8355b6a644917551bf086165ba8b", "sha256": "77854972fce30700736c56afda948bc05883d5630c30c13397af391ebb514d47"},
     {"name": "confused", "file": "confused.gif", "source_sha256": "244a67c812f8b6a39681258a16f38249f7c47d496ed77c7731ab6d5069ac0fab", "sha256": "b0ea4e618d37f57c45b9da19de766cc575af315f8c8096edcc79dbc312a41415"}
   ],
+  "license_files": [
+    {"asset_file": "LICENSE.otto-emoji-gif.txt", "sha256": "bd806361232a065ead834a53a04b34ba51eacb257ccdb21a6506f0e8738930d8"},
+    {"asset_file": "LICENSE.xiaozhi-fonts.txt", "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"},
+    {"asset_file": "LICENSE.esp-sr.txt", "sha256": "4216dce10853a02d02f815e21f10a72f51de610f45fb995108f6dbada595ef70"}
+  ],
   "assets": {
     "file": "assets.bin",
-    "size_bytes": 1827010,
-    "sha256": "11c678b3d9719134442b85397e976ba65e090c188e73d17cf07938f1c3cb6a22"
+    "size_bytes": 1840675,
+    "sha256": "535b58f07ef478e716f6adeb703d4fb24087fe087f7706a6195e1034feee76ea"
   }
 }

@@ -10,7 +10,10 @@
   `3f4f9fa5dcb703208bf22e46a185bb2b4cc9d002b9474b90f7c77e55e0ac541a`
   与 repository commit `d45dbc64052d57048f20ab1770074172ce9eb53b` 中的
   `font_noto_sans_common_16_4.bin`（Apache-2.0）
-- Stage 1 WakeNet9：`wn9_hiesp`
+- Stage 1 WakeNet9：Espressif Component Registry `espressif/esp-sr@2.4.7`，component
+  hash `809d0041cdddd98a278f0d5afef7bb60a451290577b98cf718dfffc91bdcbd9b`，repository
+  commit `2f8c4b0459db5bbb39abd77adae27962d6d94bcb` 中的 `wn9_heyily_tts2`
+  （模型内部标识 `wakenet9l_tts2h12`，ESPRESSIF-MIT）
 - 目标 assets 分区：`0x200000` bytes
 
 输入文件和最终二进制哈希记录在 `assets-manifest.json`。不得用移动的 `main`、未固定的 release 页面下载物或本地改图替换这些来源。
@@ -32,14 +35,14 @@ node main/boards/irille-s3-eye/tools/build_assets.mjs \
   main/boards/irille-s3-eye/assets.bin
 ```
 
-脚本拒绝 commit 不匹配的输入，固定 ESP32-S3、240×240、`wn9_hiesp`
+脚本拒绝 commit 不匹配的输入，固定 ESP32-S3、240×240、`wn9_heyily_tts2`
 和 21 个 Otto GIF。先运行一次 ESP-IDF reconfigure/release build，确保固定版本的
 `78/xiaozhi-fonts` 已位于 `managed_components/`。GIF 由 FFmpeg `8.1.2` 保持
 240×240、帧数和时长重编码，以给本地 common 字体释放空间；manifest 同时记录原始
 与打包后哈希。生成环境为 Node.js `v26.4.0`；最终输出：
 
-- size：`1,827,010` bytes
-- SHA-256：`11c678b3d9719134442b85397e976ba65e090c188e73d17cf07938f1c3cb6a22`
+- size：`1,840,675` bytes（距 `0x200000` 上限尚余 `256,477` bytes）
+- SHA-256：`535b58f07ef478e716f6adeb703d4fb24087fe087f7706a6195e1034feee76ea`
 
 `assets.bin` 是 release 的 board-local 输入，必须随 firmware commit 入库。上游全局
 `.gitignore` 忽略 `*.bin`，因此生成或升级后需用 `git add -f
@@ -49,8 +52,9 @@ main/boards/irille-s3-eye/assets.bin`，并在提交前再次核对 manifest SHA
 生成范围只允许：
 
 - `index.json`
-- `srmodels.bin`（仅 `wn9_hiesp`）
+- `srmodels.bin`（仅 `wn9_heyily_tts2`）
 - `font_noto_sans_common_16_4.bin`（`noto-v1/common/16/4`）
+- 三份第三方许可正文：Otto MIT、xiaozhi-fonts Apache-2.0、ESP-SR ESPRESSIF-MIT
 - 21 个与 xiaozhi emotion name 对齐的 GIF
 
 不得加入背景、MultiNet、第二个 WakeNet 模型或其他字体。
@@ -75,10 +79,12 @@ python main/boards/irille-s3-eye/tools/validate_assets.py \
 
 - assets header、checksum、文件表和 `0x5A5A` 数据前缀；
 - 21 个 emotion name 恰好一次；
-- srmodels 仅含 `wn9_hiesp`；
+- srmodels 仅含 `wn9_heyily_tts2`；
 - 本地字体及 metadata 恰好为 `noto-v1/common/16/4`；
 - 输入与输出哈希匹配 manifest；
+- WakeNet `_MODEL_INFO_`、`wn9_data` 与 `wn9_index` 内容哈希匹配锁定来源；
 - Otto MIT LICENSE 存在；
+- ESP-SR ESPRESSIF-MIT LICENSE 存在；
 - `assets.bin <= 0x200000`。
 
 ## 许可
@@ -87,7 +93,12 @@ python main/boards/irille-s3-eye/tools/validate_assets.py \
   `LICENSES/otto-emoji-gif-component.LICENSE`，manifest 同时记录固定 source commit。
 - `78/xiaozhi-fonts` 使用 Apache-2.0；manifest 固定组件版本、component hash、仓库 commit
   和实际字体文件 SHA-256。
-- Stage 1 `wn9_hiesp` 来自锁定的 Espressif ESP-SR 组件。专属模型只能在供应方明确给出
+- 三份完整许可正文以 `LICENSE.otto-emoji-gif.txt`、`LICENSE.xiaozhi-fonts.txt` 与
+  `LICENSE.esp-sr.txt` 嵌入
+  `assets.bin`，因此会随 `merged-binary.bin` 和 release ZIP 一并交付；validator 固定其
+  SHA-256，缺失、截断或替换均会使发布验证失败。
+- Stage 1 `wn9_heyily_tts2` 来自上述锁定的 Espressif ESP-SR 组件，其 ESPRESSIF-MIT
+  许可证正文随资产交付。专属模型只能在供应方明确给出
   来源、兼容版本和非独占商业使用许可后替换，不能用“文件可下载”代替许可证据。
 
 ## 升级
@@ -103,10 +114,12 @@ ESP-IDF v6.0.2 release build 与完整实机门禁；不能只更新下载地址
 
 ## 回退
 
-把 `config.json` 的 Stage 1 四项恢复为：
+把 `config.json` 的 Stage 1 六项恢复为：
 
 - 删除 `CONFIG_SR_WN_WN9_NIHAOXIAOZHI_TTS=n`
-- 删除 `CONFIG_SR_WN_WN9_HIESP=y`
+- 删除 `CONFIG_SR_WN_WN9_HIESP=n`
+- 删除 `CONFIG_SR_WN_WN9_SOPHIA_TTS=n`
+- 删除 `CONFIG_SR_WN_WN9_HEYILY_TTS2=y`
 - 删除 `CONFIG_FLASH_CUSTOM_ASSETS=y`
 - 删除 `CONFIG_CUSTOM_ASSETS_FILE="boards/irille-s3-eye/assets.bin"`
 
