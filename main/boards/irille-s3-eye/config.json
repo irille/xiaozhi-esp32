@@ -16,7 +16,8 @@
                 "CONFIG_CUSTOM_ASSETS_FILE=\"boards/irille-s3-eye/assets.bin\"",
                 "CONFIG_CAMERA_OV2640=y",
                 "CONFIG_CAMERA_OV2640_AUTO_DETECT_DVP_INTERFACE_SENSOR=y",
-                "CONFIG_CAMERA_OV2640_DVP_YUV422_240X240_25FPS=y"
+                "CONFIG_CAMERA_OV2640_DVP_YUV422_YUYV_640X480_6FPS=y",
+                "CONFIG_CAMERA_OV2640_DVP_DEFAULT_FMT_YUV422_YUYV_640X480_6FPS=y"
             ]
         }
     ]
