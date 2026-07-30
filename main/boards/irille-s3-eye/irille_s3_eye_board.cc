@@ -100,7 +100,10 @@ private:
         };
 
         camera_ = new EspVideo(video_config);
-        camera_->SetHMirror(false);
+        // S3-EYE 的 OV2640 装配方向使画面左右镜像：屏幕预览时人眼不敏感（看自己是镜像反而自然），
+        // 但 take_photo 上传给 VLLM 的图里文字全是反的，型号识别必然失败（#27 实测：
+        // 标签 ZQ-FY-T26 被读成 9ST-YF-20，每处错误都与镜像严格对应）。
+        camera_->SetHMirror(true);
         camera_->SetVFlip(true);
     }
 
