@@ -966,6 +966,30 @@ menu "Camera Configuration"
 
             Not currently supported when used simultaneously with XIAOZHI_ENABLE_ROTATE_CAMERA_IMAGE.
 
+    config XIAOZHI_JPEG_DECODE_SCALE_WIDTH
+        int "JPEG preview decode scale width (0 = disable)"
+        default 0
+        depends on XIAOZHI_CAMERA_ALLOW_JPEG_INPUT && !XIAOZHI_ENABLE_HARDWARE_JPEG_DECODER
+        help
+            Decode the JPEG preview image at a reduced resolution instead of full size.
+
+            The preview image is scaled down again by LVGL before it reaches the panel, so
+            decoding at full sensor resolution wastes both PSRAM and CPU. Scaling during
+            decode keeps the uploaded image at full resolution while shrinking only the
+            preview buffer.
+
+            Set to 0 (default) to decode at full size, which matches upstream behaviour.
+
+            Both width and height must be non-zero, multiples of 8, and no smaller than
+            1/8 of the sensor resolution. Set them together with the height option below.
+
+    config XIAOZHI_JPEG_DECODE_SCALE_HEIGHT
+        int "JPEG preview decode scale height (0 = disable)"
+        default 0
+        depends on XIAOZHI_CAMERA_ALLOW_JPEG_INPUT && !XIAOZHI_ENABLE_HARDWARE_JPEG_DECODER
+        help
+            See XIAOZHI_JPEG_DECODE_SCALE_WIDTH. Both options must be set together.
+
     config XIAOZHI_ENABLE_HARDWARE_JPEG_ENCODER
         bool "Enable Hardware JPEG Encoder"
         default y

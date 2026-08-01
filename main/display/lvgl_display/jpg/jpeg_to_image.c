@@ -28,10 +28,18 @@ static esp_err_t decode_with_new_jpeg(const uint8_t* src, size_t src_len, uint8_
     uint8_t* out_buf = NULL;
     jpeg_dec_io_t jpeg_io = {0};
     jpeg_dec_header_info_t out_info = {0};
+    int outbuf_len = 0;
+    size_t out_w = 0;
+    size_t out_h = 0;
 
     jpeg_dec_config_t config = DEFAULT_JPEG_DEC_CONFIG();
     config.output_type = JPEG_PIXEL_FORMAT_RGB565_LE;
     config.rotate = JPEG_ROTATE_0D;
+#if CONFIG_XIAOZHI_JPEG_DECODE_SCALE_WIDTH > 0 && CONFIG_XIAOZHI_JPEG_DECODE_SCALE_HEIGHT > 0
+    // 缩放解码：预览最终由 LVGL 缩到屏幕尺寸，按传感器全尺寸解码白费 PSRAM 与 CPU
+    config.scale.width = CONFIG_XIAOZHI_JPEG_DECODE_SCALE_WIDTH;
+    config.scale.height = CONFIG_XIAOZHI_JPEG_DECODE_SCALE_HEIGHT;
+#endif
 
     jpeg_dec_handle_t jpeg_dec = NULL;
     jpeg_ret = jpeg_dec_open(&config, &jpeg_dec);
@@ -53,7 +61,36 @@ static esp_err_t decode_with_new_jpeg(const uint8_t* src, size_t src_len, uint8_
 
     ESP_LOGD(TAG, "JPEG header info: width=%d, height=%d", out_info.width, out_info.height);
 
-    out_buf = jpeg_calloc_align(out_info.width * out_info.height * 2, 16);
+    // 输出缓冲大小以解码器自报为准，不按 out_info 反算——启用缩放解码后两者不相等
+    jpeg_ret = jpeg_dec_get_outbuf_len(jpeg_dec, &outbuf_len);
+    if (jpeg_ret != JPEG_ERR_OK || outbuf_len <= 0) {
+        ESP_LOGE(TAG, "Failed to get JPEG output buffer length");
+        ret = ESP_FAIL;
+        goto jpeg_dec_failed;
+    }
+
+    out_w = (size_t)out_info.width;
+    out_h = (size_t)out_info.height;
+#if CONFIG_XIAOZHI_JPEG_DECODE_SCALE_WIDTH > 0 && CONFIG_XIAOZHI_JPEG_DECODE_SCALE_HEIGHT > 0
+    // 用自报长度反证缩放是否真的生效：解码器闭源，对非法 scale 的行为未文档化，
+    // 不能假定配了就一定生效。上报尺寸必须与缓冲大小自洽，否则下游按错误尺寸读会越界。
+    if (outbuf_len == CONFIG_XIAOZHI_JPEG_DECODE_SCALE_WIDTH * CONFIG_XIAOZHI_JPEG_DECODE_SCALE_HEIGHT * 2) {
+        out_w = CONFIG_XIAOZHI_JPEG_DECODE_SCALE_WIDTH;
+        out_h = CONFIG_XIAOZHI_JPEG_DECODE_SCALE_HEIGHT;
+    } else if (outbuf_len == (int)(out_w * out_h * 2)) {
+        ESP_LOGW(TAG, "JPEG scale %dx%d not applied by decoder, decoding at full size %ux%u",
+                 CONFIG_XIAOZHI_JPEG_DECODE_SCALE_WIDTH, CONFIG_XIAOZHI_JPEG_DECODE_SCALE_HEIGHT,
+                 (unsigned)out_w, (unsigned)out_h);
+    } else {
+        ESP_LOGE(TAG, "Unexpected JPEG output buffer length %d (image %ux%u, scale %dx%d)", outbuf_len,
+                 (unsigned)out_w, (unsigned)out_h, CONFIG_XIAOZHI_JPEG_DECODE_SCALE_WIDTH,
+                 CONFIG_XIAOZHI_JPEG_DECODE_SCALE_HEIGHT);
+        ret = ESP_ERR_INVALID_SIZE;
+        goto jpeg_dec_failed;
+    }
+#endif
+
+    out_buf = jpeg_calloc_align(outbuf_len, 16);
     if (out_buf == NULL) {
         ESP_LOGE(TAG, "Failed to allocate memory for JPEG output buffer");
         ret = ESP_ERR_NO_MEM;
@@ -68,14 +105,14 @@ static esp_err_t decode_with_new_jpeg(const uint8_t* src, size_t src_len, uint8_
         goto jpeg_dec_failed;
     }
 
-    ESP_LOG_BUFFER_HEXDUMP(TAG, out_buf, MIN(out_info.width * out_info.height * 2, 256), ESP_LOG_DEBUG);
+    ESP_LOG_BUFFER_HEXDUMP(TAG, out_buf, MIN(outbuf_len, 256), ESP_LOG_DEBUG);
 
     *out = out_buf;
     out_buf = NULL;
-    *out_len = (size_t)(out_info.width * out_info.height * 2);
-    *width = (size_t)out_info.width;
-    *height = (size_t)out_info.height;
-    *stride = (size_t)out_info.width * 2;
+    *out_len = (size_t)outbuf_len;
+    *width = out_w;
+    *height = out_h;
+    *stride = out_w * 2;
     jpeg_dec_close(jpeg_dec);
     jpeg_dec = NULL;
 
