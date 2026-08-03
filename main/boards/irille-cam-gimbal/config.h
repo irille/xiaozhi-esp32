@@ -113,7 +113,9 @@
 // 配套 sdkconfig 键 CONFIG_XIAOZHI_CAMERA_ALLOW_JPEG_INPUT=y 在 config.json 里，
 // 少了它 JPEG 帧会掉进软编码分支、上传必失败（image_to_jpeg.cpp:452-459）。
 #define CAMERA_PIXEL_FORMAT PIXFORMAT_JPEG    // 5MP raw 放不进 8MB PSRAM，高分辨率只有 JPEG（§3-3）
-#define CAMERA_FRAME_SIZE   FRAMESIZE_UXGA    // 1600×1200，与 S3-EYE #31 同档可做单变量对照
+#define CAMERA_FRAME_SIZE   FRAMESIZE_UXGA    // 1600×1200。C5/C6 已实测结案（2026-08-03）：QSXGA 5MP
+                                              // 功能可跑但单拍 104s（UXGA≈10s）且阻塞主循环致 WS 掉线重连，
+                                              // 门店场景不可用；UXGA 读标签已足（P-155A-T3C/H94-C/EWG 061 C 实证）。
 #define CAMERA_JPEG_QUALITY 12                // 数值越小画质越高；串口出现 FB-OVF 就调大（C5）
 #define CAMERA_FB_COUNT     1                 // 静态拍照不需要双缓冲（§3-3）
 

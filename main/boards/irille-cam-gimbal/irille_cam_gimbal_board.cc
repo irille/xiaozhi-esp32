@@ -31,6 +31,7 @@
 
 #include "custom_io_expander_ch32v003.h"
 #include "esp32_camera.h"
+#include <esp_lcd_touch_cst816s.h>
 
 #define TAG "irille_cam_gimbal"
 
@@ -53,6 +54,30 @@ protected:
     }
 };
 
+// 字幕/表情布局重排（板内子类，core 一字不动）：上游默认布局把 Otto GIF 的
+// 240×240 画布垂直居中，在本板 240×284 屏上占 y=22..262，与底部字幕条
+//（单行分支高 line_height+16，底部锚定）几何重叠 ~16px——实机字幕被压的根因。
+// 处置：先跑上游 SetupUI() 保留原布局，再做三行板内调整——
+//   1. GIF 渲染期缩放到 150×150（LVGL9 inner_align=CONTAIN 现成能力，资产不动，
+//      逐帧 set_src 不会重置 inner_align）；
+//   2. 表情框上移到状态栏之下，底部让位给多行字幕（多行与 20 号字走本板
+//      config.json 的 USE_MULTILINE_CHAT_MESSAGE 与板内 assets.bin，不改代码）；
+//   3. 150 与 36 是板内标定常量，按实机照片可调。
+class IrilleCamGimbalDisplay : public SpiLcdDisplay {
+public:
+    using SpiLcdDisplay::SpiLcdDisplay;
+
+    void SetupUI() override {
+        SpiLcdDisplay::SetupUI();
+        DisplayLockGuard lock(this);
+        // 表情保持上游全尺寸；字幕条提到最前景,浮在表情之上(S3-EYE 同款观感)。
+        // 缩小表情装进小框的方案已实机否决(2026-08-03:黑底方块贴片,丑)。
+        if (bottom_bar_ != nullptr) {
+            lv_obj_move_foreground(bottom_bar_);
+        }
+    }
+};
+
 class IrilleCamGimbalBoard : public WifiBoard {
 private:
     Button boot_button_;
@@ -63,6 +88,9 @@ private:
     ExpanderBacklight* backlight_ = nullptr;
     // 只为持有所有权：Gimbal 在自己的构造函数里注册工具、起 tick，board 不再调用它。
     Gimbal* gimbal_ = nullptr;
+    esp_lcd_touch_handle_t touch_ = nullptr;
+    esp_timer_handle_t touch_timer_ = nullptr;
+    bool touch_was_pressed_ = false;
 
     void InitializeI2c() {
         i2c_master_bus_config_t i2c_bus_cfg = {
@@ -171,9 +199,9 @@ private:
         ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel, DISPLAY_INVERT_COLOR));
         ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel, true));
 
-        display_ = new SpiLcdDisplay(panel_io, panel, DISPLAY_WIDTH, DISPLAY_HEIGHT,
-                                     DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X,
-                                     DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+        display_ = new IrilleCamGimbalDisplay(panel_io, panel, DISPLAY_WIDTH, DISPLAY_HEIGHT,
+                                              DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X,
+                                              DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
         backlight_ = new ExpanderBacklight(io_expander_);
         backlight_->RestoreBrightness();
     }
@@ -235,6 +263,53 @@ private:
         camera_->SetVFlip(CAMERA_VFLIP);
     }
 
+    // 点按屏幕 = 唤醒/打断(等效 BOOT 键)。1.83 寸触摸款控制器按 CST816 系探测;
+    // 探测失败只打日志不影响启动(屏幕可能是非触摸批次)。无 INT 线,80ms 轮询按下沿。
+    void InitializeTouch() {
+        esp_lcd_touch_config_t tp_cfg = {
+            .x_max = DISPLAY_WIDTH,
+            .y_max = DISPLAY_HEIGHT,
+            .rst_gpio_num = GPIO_NUM_NC,   // 复位走 EXIO0,已在 InitializeExpanderPeripherals 打过脉冲
+            .int_gpio_num = GPIO_NUM_NC,
+            .levels = { .reset = 0, .interrupt = 0 },
+            .flags = { .swap_xy = 0, .mirror_x = 0, .mirror_y = 0 },
+        };
+        esp_lcd_panel_io_i2c_config_t tp_io_config = {};
+        tp_io_config.dev_addr = ESP_LCD_TOUCH_IO_I2C_CST816S_ADDRESS;
+        tp_io_config.control_phase_bytes = 1;
+        tp_io_config.lcd_cmd_bits = 8;
+        tp_io_config.flags.disable_control_phase = 1;
+        tp_io_config.scl_speed_hz = 400 * 1000;
+        esp_lcd_panel_io_handle_t tp_io = nullptr;
+        if (esp_lcd_new_panel_io_i2c(i2c_bus_, &tp_io_config, &tp_io) != ESP_OK ||
+            esp_lcd_touch_new_i2c_cst816s(tp_io, &tp_cfg, &touch_) != ESP_OK) {
+            ESP_LOGW(TAG, "触摸控制器未探测到(CST816 @0x15),点按功能停用");
+            touch_ = nullptr;
+            return;
+        }
+        ESP_LOGI(TAG, "触摸就绪(CST816),点按=唤醒/打断");
+        const esp_timer_create_args_t args = {
+            .callback = [](void* arg) {
+                auto* self = static_cast<IrilleCamGimbalBoard*>(arg);
+                esp_lcd_touch_read_data(self->touch_);
+                uint16_t x, y;
+                uint8_t cnt = 0;
+                bool pressed = esp_lcd_touch_get_coordinates(self->touch_, &x, &y, nullptr, &cnt, 1) && cnt > 0;
+                if (pressed && !self->touch_was_pressed_) {
+                    Application::GetInstance().Schedule([]() {
+                        Application::GetInstance().ToggleChatState();
+                    });
+                }
+                self->touch_was_pressed_ = pressed;
+            },
+            .arg = this,
+            .dispatch_method = ESP_TIMER_TASK,
+            .name = "touch_poll",
+        };
+        ESP_ERROR_CHECK(esp_timer_create(&args, &touch_timer_));
+        ESP_ERROR_CHECK(esp_timer_start_periodic(touch_timer_, 80 * 1000));
+    }
+
 public:
     IrilleCamGimbalBoard() : boot_button_(BOOT_BUTTON_GPIO) {
         // ⚠️ 前三步的顺序是硬性要求（§1 四、§2-7），别按「相关的放一起」重排：
@@ -250,6 +325,7 @@ public:
         InitializeDisplay();
         InitializeButtons();
         InitializeCamera();
+        InitializeTouch();  // 触摸复位脉冲已在 ③ 完成,这里只做驱动探测与轮询
     }
 
     AudioCodec* GetAudioCodec() override {

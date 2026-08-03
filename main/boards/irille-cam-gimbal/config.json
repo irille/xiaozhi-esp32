@@ -11,8 +11,14 @@
                 "CONFIG_SR_WN_WN9_HEYILY_TTS2=n",
                 "CONFIG_OTA_URL=\"http://192.168.1.48:8003/xiaozhi/ota/\"",
                 "CONFIG_XIAOZHI_CAMERA_ALLOW_JPEG_INPUT=y",
+                "CONFIG_XIAOZHI_CAMERA_JPEG_PREVIEW=y",
+                "CONFIG_XIAOZHI_JPEG_DECODE_SCALE_WIDTH=320",
+                "CONFIG_XIAOZHI_JPEG_DECODE_SCALE_HEIGHT=240",
                 "CONFIG_FLASH_CUSTOM_ASSETS=y",
-                "CONFIG_CUSTOM_ASSETS_FILE=\"boards/irille-cam-gimbal/assets.bin\""
+                "CONFIG_CUSTOM_ASSETS_FILE=\"boards/irille-cam-gimbal/assets.bin\"",
+                "CONFIG_LANGUAGE_IT_IT=y",
+                "CONFIG_USE_MULTILINE_CHAT_MESSAGE=y",
+                "CONFIG_XIAOZHI_CAMERA_PREVIEW_FULL_WIDTH=y"
             ]
         }
     ]
