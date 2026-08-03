@@ -1,0 +1,17 @@
+{
+    "target": "esp32s3",
+    "builds": [
+        {
+            "name": "irille-cam-gimbal",
+            "idf_version": ">=6.0.2",
+            "sdkconfig_append": [
+                "CONFIG_SR_WN_WN9_NIHAOXIAOZHI_TTS=n",
+                "CONFIG_SR_WN_WN9_HIESP=y",
+                "CONFIG_SR_WN_WN9_SOPHIA_TTS=n",
+                "CONFIG_SR_WN_WN9_HEYILY_TTS2=n",
+                "CONFIG_OTA_URL=\"http://192.168.1.48:8003/xiaozhi/ota/\"",
+                "CONFIG_XIAOZHI_CAMERA_ALLOW_JPEG_INPUT=y"
+            ]
+        }
+    ]
+}
