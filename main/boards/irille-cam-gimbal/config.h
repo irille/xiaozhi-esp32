@@ -71,7 +71,7 @@
 //   1.83 寸 ST7789 → 240×284，其余不变；
 //   3.5  寸 ST7796 → 320×480 + DISPLAY_MIRROR_X 改 true，board .cc 换 esp_lcd_new_panel_st7796()。
 #define DISPLAY_WIDTH           240
-#define DISPLAY_HEIGHT          320
+#define DISPLAY_HEIGHT          284   // A1 实测定案：微雪 1.83 寸 ST7789P 240×284（触摸款）
 #define DISPLAY_SWAP_XY         false
 #define DISPLAY_MIRROR_X        false
 #define DISPLAY_MIRROR_Y        false

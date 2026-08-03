@@ -10,7 +10,9 @@
                 "CONFIG_SR_WN_WN9_SOPHIA_TTS=n",
                 "CONFIG_SR_WN_WN9_HEYILY_TTS2=n",
                 "CONFIG_OTA_URL=\"http://192.168.1.48:8003/xiaozhi/ota/\"",
-                "CONFIG_XIAOZHI_CAMERA_ALLOW_JPEG_INPUT=y"
+                "CONFIG_XIAOZHI_CAMERA_ALLOW_JPEG_INPUT=y",
+                "CONFIG_FLASH_CUSTOM_ASSETS=y",
+                "CONFIG_CUSTOM_ASSETS_FILE=\"boards/irille-cam-gimbal/assets.bin\""
             ]
         }
     ]
