@@ -866,7 +866,13 @@ void LcdDisplay::SetupUI() {
 
     /* Middle layer: preview_image_ - centered display */
     preview_image_ = lv_image_create(screen);
+#ifdef CONFIG_XIAOZHI_CAMERA_PREVIEW_FULL_WIDTH
+    // irille 例外(2026-08-03 统筹批准):预览容器放大到全屏宽。默认关=上游半屏。
+    // 上游提供预览尺寸配置后移除。
+    lv_obj_set_size(preview_image_, width_, height_);
+#else
     lv_obj_set_size(preview_image_, width_ / 2, height_ / 2);
+#endif
     lv_obj_align(preview_image_, LV_ALIGN_CENTER, 0, 0);
     lv_obj_add_flag(preview_image_, LV_OBJ_FLAG_HIDDEN);
 
@@ -1037,8 +1043,13 @@ void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
     auto img_dsc = preview_image_cached_->image_dsc();
     lv_image_set_src(preview_image_, img_dsc);
     if (img_dsc->header.w > 0 && img_dsc->header.h > 0) {
+#ifdef CONFIG_XIAOZHI_CAMERA_PREVIEW_FULL_WIDTH
+        // irille 例外(2026-08-03):预览按全屏宽显示(256/256);默认关=上游 0.5 倍。
+        lv_image_set_scale(preview_image_, 256 * width_ / img_dsc->header.w);
+#else
         // zoom factor 0.5
         lv_image_set_scale(preview_image_, 128 * width_ / img_dsc->header.w);
+#endif
     }
 
     // Hide emoji_box_

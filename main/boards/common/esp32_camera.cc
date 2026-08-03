@@ -13,6 +13,11 @@
 #include "mcp_server.h"
 #include "system_info.h"
 #include "jpg/image_to_jpeg.h"
+#ifdef CONFIG_XIAOZHI_CAMERA_JPEG_PREVIEW
+// irille 例外（统筹批准 2026-08-03）：JPEG 拍照预览复用 esp_video 栈现成的 jpeg_to_image()。
+// 撤除条件：上游 esp32_camera.cc 自行实现 JPEG 预览时，本 include 与 Capture() 内对应分支整段移除。
+#include "jpg/jpeg_to_image.h"
+#endif
 #include "esp_timer.h"
 
 #define TAG "Esp32Camera"
@@ -119,8 +124,36 @@ bool Esp32Camera::Capture() {
             }
         }
     } else if (current_fb_->format == PIXFORMAT_JPEG) {
+#ifdef CONFIG_XIAOZHI_CAMERA_JPEG_PREVIEW
+        // irille 例外（统筹批准 2026-08-03）：上游对 esp32-camera 驱动的 JPEG 帧跳过预览；
+        // 这里移植 esp_video.cc 的 JPEG 分支模式，复用 jpeg_to_image()（含缩放解码与
+        // outbuf_len 越界防护）解码后送预览。尺寸/长度全部取出参，不自行反算。
+        // 解码输出为 RGB565_LE 直送 LVGL，不得应用 swap_bytes_enabled_（那是 DVP 传感器字节序问题）。
+        // 解码失败只丢预览，拍照主链路（current_fb_ 保留供 Explain 上传）不受任何影响。
+        // 撤除条件：上游自行实现 JPEG 预览时本分支整段移除，恢复 #else 中的上游原文。
+        uint8_t *out_data = nullptr;  // 由 jpeg_to_image 内部分配，所有权移交 LvglAllocatedImage
+        size_t out_len = 0;
+        size_t out_width = 0;
+        size_t out_height = 0;
+        size_t out_stride = 0;
+        esp_err_t ret = jpeg_to_image(current_fb_->buf, current_fb_->len, &out_data, &out_len, &out_width, &out_height, &out_stride);
+        if (ret == ESP_OK) {
+            auto display = dynamic_cast<LvglDisplay *>(Board::GetInstance().GetDisplay());
+            if (display != nullptr) {
+                display->SetPreviewImage(std::make_unique<LvglAllocatedImage>(out_data, out_len, out_width, out_height, out_stride, LV_COLOR_FORMAT_RGB565));
+            } else {
+                heap_caps_free(out_data);
+            }
+        } else {
+            ESP_LOGW(TAG, "Failed to decode JPEG preview: %d (%s)", (int)ret, esp_err_to_name(ret));
+            if (out_data) {  // 防御性释放：失败路径 out_data 已保证为 NULL
+                heap_caps_free(out_data);
+            }
+        }
+#else
         // JPEG format preview usually requires decoding, skip preview display for now, just log
         ESP_LOGW(TAG, "JPEG capture success, len=%zu, but not supported for preview", current_fb_->len);
+#endif
     }
 
     ESP_LOGI(TAG, "Captured frame: %dx%d, len=%zu, format=%d",

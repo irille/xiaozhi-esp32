@@ -993,6 +993,28 @@ menu "Camera Configuration"
         help
             See XIAOZHI_JPEG_DECODE_SCALE_WIDTH. Both options must be set together.
 
+    config XIAOZHI_CAMERA_PREVIEW_FULL_WIDTH
+        bool "Show camera preview at full screen width"
+        default n
+        help
+            irille exception: enlarge the photo preview widget to full screen
+            width (upstream shows it at half width). Default n = upstream behavior.
+
+    config XIAOZHI_CAMERA_JPEG_PREVIEW
+        bool "Show preview for JPEG frames captured via esp32-camera"
+        default n
+        depends on XIAOZHI_CAMERA_ALLOW_JPEG_INPUT
+        help
+            Upstream skips the on-screen preview for JPEG frames captured through the
+            esp32-camera driver (it only logs a warning). Enable this option to decode
+            the captured JPEG with esp_new_jpeg and show it as the preview image.
+
+            Set to n (default) to keep the upstream behaviour (no preview for JPEG).
+
+            It is recommended to combine this with XIAOZHI_JPEG_DECODE_SCALE_WIDTH and
+            XIAOZHI_JPEG_DECODE_SCALE_HEIGHT so only a shrunken preview buffer is
+            allocated instead of a full-resolution frame.
+
     config XIAOZHI_ENABLE_HARDWARE_JPEG_ENCODER
         bool "Enable Hardware JPEG Encoder"
         default y
