@@ -132,23 +132,22 @@
 #define PCA9685_OSC_HZ          25000000    // 标称值。实片偏差 ±5-8%，由标定吸收而非修正；
                                             // 真要动走 NVS 键 osc_hz（§2-2）
 
-#define GIMBAL_CH_PAN           0   // 水平轴 → PCA9685 CH0（已实测：正前方 = 1500，零偏置）
-#define GIMBAL_CH_TILT          1   // 俯仰轴 → PCA9685 CH1（舵机判废待换 MG90S，全部默认值未标定）
+#define GIMBAL_CH_PAN           0   // 水平轴 → PCA9685 CH0
+#define GIMBAL_CH_TILT          1   // 俯仰轴 → PCA9685 CH1（新 MG90S 已于换装日定中装配）
 
 // 标定默认值：权威值在 NVS（namespace GIMBAL_NVS_NAMESPACE，走上游 Settings，全整数），
 // 这里只是 NVS 为空时的兜底。兜底必须「安全可用」——merged-binary 全刷会清 NVS（§2-2）。
 #define GIMBAL_NVS_NAMESPACE    "gimbal"
 
-#define GIMBAL_PAN_CENTER_US    1500  // 实测零偏置，正前方 = 1500（backlog:206）
-#define GIMBAL_TILT_CENTER_US   1500  // 标称值，待实机标定（G2/G3）
-#define GIMBAL_PAN_UDEG100      1000  // µs/度 ×100，**带符号**，负号即方向翻转；
-                                      // 1000 = MG90S 标称 10.00 µs/°（600-2400µs / 180°），待实测（G3）
-#define GIMBAL_TILT_UDEG100     1000  // 同上，待实机标定（G2/G3）
+#define GIMBAL_PAN_CENTER_US    1600  // 换装日带载实测：正前方 = 1600（8/3 的 1500 旧值作废）
+#define GIMBAL_TILT_CENTER_US   1500  // 换装日实测：定中装配后 1500 = 水平，一次到位
+#define GIMBAL_PAN_UDEG100      (-1000) // 实测：脉宽减小 = 右转 → 正角度(右)对应负向
+#define GIMBAL_TILT_UDEG100     (-1000) // 实测：脉宽增大 = 低头 → 正角度(抬头)对应负向
 
 // 软限位，单位「度」，**0 = 正前方**（D5）；正 = 相机向右转 / 抬头。
 // Gimbal 模块负责换算成 µs 并钳位，运行期以 µs 为权威单位；MCP schema 只公示范围不做换算。
-#define GIMBAL_PAN_MIN_DEG      (-45)
-#define GIMBAL_PAN_MAX_DEG      45
+#define GIMBAL_PAN_MIN_DEG      (-80)   // 换装日实测 ±80° 干净（用户定案安全基线；日常脱线运行）
+#define GIMBAL_PAN_MAX_DEG      80
 // ⚠️ 俯仰轴刻意收窄到 ±10，**两端同源**：backlog:189 的首测安全角 Tilt 80-100°
 // 在 0 基准下正是 ±10，那是本项目对这根轴唯一的实测依据。设计标称的 ±25 来自
 // 「固件硬限位」一档（backlog:189 的 Tilt 65-115°），但俯仰舵机尚未到货、
@@ -157,8 +156,11 @@
 // 低头方向另有 USB-C 插头干涉（backlog:219-220），收窄本就必要；v1 不做
 // pan×tilt 二维规则，一个覆盖所有 pan 角的保守值解决（§2-3.2）。
 // L 型转接头到货 + G4 实测后经 NVS tilt_min/tilt_max 放宽，代码零改动。
+// 换装日实测定案（用户拍板安全基线）：日常脱线运行,低头 -10° 实测安全（点头动作
+// 主行程）;抬头 +80°（700µs 钳位处）全程无碰擦。⚠️ 插 USB 调试时低头会撞插头,
+// 属操作纪律（调试期别发低头指令）,不再为此收窄默认值。
 #define GIMBAL_TILT_MIN_DEG     (-10)
-#define GIMBAL_TILT_MAX_DEG     10
+#define GIMBAL_TILT_MAX_DEG     80
 
 #define GIMBAL_HOLD_MS          2000  // 时间盒：下发脉宽后多久自动松弛；0 = 永不松弛（D9）
 

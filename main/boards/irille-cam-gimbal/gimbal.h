@@ -244,6 +244,9 @@ class Gimbal : public I2cDevice {
   // 唯一的下发通路：任何路径都必须经 ClampUs（D3 的第三道闸），包括回中。
   // 上游解析器可能被绕过（Hub 直发、schema 过期），这里是最后一道。
   std::string MoveToUsLocked(int pan_us, int tilt_us) {
+    if (!in_gesture_step_) {
+      gesture_active_ = false;  // 任何外部指令立即接管，手势中断（last-write-wins）
+    }
     const int target[kAxisCount] = {pan_us, tilt_us};
     bool clamped = false;
     const int64_t now = esp_timer_get_time();
@@ -283,6 +286,55 @@ class Gimbal : public I2cDevice {
     return std::string(buf);
   }
 
+  // ── 拟态手势 ──────────────────────────────────────────────────────────────
+  std::string StartGestureLocked(bool nod) {
+    if (nod) {
+      // 实机定稿波形（用户裁定）：+20 → -10 → +20 → -10 → 回正，单程观感 30°。
+      // 纯抬头式(10°/20°)均被实机否决为幅度不足；-10° 在安全基线内（脱线部署常态；
+      // 插 USB 调试时点头会入插头区，属调试期操作注意，不再为此改波形）。
+      const int up = DegHi(kAxisTilt) < 20 ? DegHi(kAxisTilt) : 20;
+      const int down = DegLo(kAxisTilt) > -10 ? DegLo(kAxisTilt) : -10;
+      const int seq[5][2] = {{0, up}, {0, down}, {0, up}, {0, down}, {0, 0}};
+      for (int i = 0; i < 5; i++) { gesture_deg_[i][0] = seq[i][0]; gesture_deg_[i][1] = seq[i][1]; }
+      gesture_len_ = 5;
+    } else {
+      const int left = DegLo(kAxisPan) > -20 ? DegLo(kAxisPan) : -20;
+      const int right = DegHi(kAxisPan) < 20 ? DegHi(kAxisPan) : 20;
+      const int seq[4][2] = {{left, 0}, {right, 0}, {left, 0}, {0, 0}};
+      for (int i = 0; i < 4; i++) { gesture_deg_[i][0] = seq[i][0]; gesture_deg_[i][1] = seq[i][1]; }
+      gesture_len_ = 4;
+    }
+    gesture_idx_ = 0;
+    gesture_active_ = true;
+    gesture_next_at_ = 0;
+    DoGestureStepLocked(esp_timer_get_time());  // 第一步立即出发，不等 tick
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "{\"gesture\":\"%s\",\"steps\":%d,\"step_ms\":%d}",
+                  nod ? "nod" : "shake", gesture_len_, kGestureStepMs);
+    return std::string(buf);
+  }
+
+  // ⚠️ tick 上下文，绝不抛出（同 OnTick 纪律）。写失败不推进步序，下 tick 重试；
+  // 时间盒已在 MoveToUsLocked 的失败路径武装过，断力兜底始终在场。
+  void DoGestureStepLocked(int64_t now) {
+    if (!gesture_active_ || now < gesture_next_at_) {
+      return;
+    }
+    in_gesture_step_ = true;
+    try {
+      MoveToUsLocked(DegToUs(cal_[kAxisPan], gesture_deg_[gesture_idx_][0]),
+                     DegToUs(cal_[kAxisTilt], gesture_deg_[gesture_idx_][1]));
+      gesture_idx_++;
+      gesture_next_at_ = now + (int64_t)kGestureStepMs * 1000;
+      if (gesture_idx_ >= gesture_len_) {
+        gesture_active_ = false;
+      }
+    } catch (const std::exception& e) {
+      ESP_LOGW(kTag, "gesture 步进写失败（%s），下一 tick 重试", e.what());
+    }
+    in_gesture_step_ = false;
+  }
+
   // ── 时间盒 tick ───────────────────────────────────────────────────────────
   // 100 ms 周期，跑在 esp_timer 任务而不是主循环：松弛是保护硬件的路径，不能依赖
   // 主循环健康（主循环同时在跑 TTS/协议/显示，TTS 期间会被卡住）。抖动 100 ms 对
@@ -307,10 +359,11 @@ class Gimbal : public I2cDevice {
         ReleaseAxisLocked(ax);
       }
     }
+    DoGestureStepLocked(now);
   }
 
   // ── 工具注册 ──────────────────────────────────────────────────────────────
-  // 恰好 4 个 AI 可见工具（D4）。没有 get_state：每个动作工具都返回到达位姿，
+  // 5 个 AI 可见工具（D4 的 4 个 + gesture，换舵机日用户新增裁定）。没有 get_state：每个动作工具都返回到达位姿，
   // 冷启动位置由构造函数回中确定；松弛后的重力垂落 get_state 也读不出来（它只会
   // 回读同一个内存值），真要闭环得靠 take_photo。
   void RegisterTools() {
@@ -366,6 +419,22 @@ class Gimbal : public I2cDevice {
                   return CenterLocked();
                 });
 
+    mcp.AddTool("self.gimbal.gesture",
+                "Make a human-like head gesture, then return to straight ahead: type 'nod' "
+                "nods up-down (use for yes / agreement / friendly greeting), 'shake' shakes "
+                "left-right (use for no / decline / not available). One call performs the "
+                "whole timed motion (about 1.2s); any look_* command or stop cancels it.",
+                PropertyList({Property("type", kPropertyTypeString)}),
+                [this](const PropertyList& properties) -> ReturnValue {
+                  const std::string type = properties["type"].value<std::string>();
+                  const bool nod = (type == "nod");
+                  if (!nod && type != "shake") {
+                    throw std::runtime_error("type must be 'nod' or 'shake'");
+                  }
+                  std::lock_guard<std::mutex> lock(mutex_);
+                  return StartGestureLocked(nod);
+                });
+
     mcp.AddTool("self.gimbal.stop",
                 "Emergency stop: cut power to every servo immediately. The gimbal goes limp "
                 "and stays wherever it is (the tilt axis may sag under gravity). Use this if "
@@ -375,6 +444,7 @@ class Gimbal : public I2cDevice {
                   std::lock_guard<std::mutex> lock(mutex_);
                   // 急停写失败必须报错，不能回 true。向 agent 谎报「已急停」比
                   // 报错危险得多——它会以为机器已经安全，不再采取别的措施。
+                  gesture_active_ = false;  // 急停连手势序列一起取消
                   if (!ReleaseAllLocked()) {
                     throw std::runtime_error("gimbal i2c write failed");
                   }
@@ -515,6 +585,19 @@ class Gimbal : public I2cDevice {
   int osc_hz_ = PCA9685_OSC_HZ;
   esp_timer_handle_t tick_ = nullptr;
   bool present_ = false;
+
+  // ── 拟态手势（gesture，用户新增裁定：何时做是 AI 的判断，怎么做是固件的肌肉）──
+  // 波形存「度」，每步经 DegToUs 换算，标定热更新自动跟随。步进由既有 100ms tick
+  // 驱动（300ms/步 = 3 tick，抖动可忽略），每步走 MoveToUsLocked → 时间盒/钳位全套
+  // 保护原样生效；序列结束落回正前方后由时间盒自然松弛（D9）。
+  static constexpr int kGestureStepMs = 300;
+  static constexpr int kGestureMaxSteps = 6;
+  int gesture_deg_[kGestureMaxSteps][2] = {};  // [step][pan, tilt]，单位度
+  int gesture_len_ = 0;
+  int gesture_idx_ = 0;
+  int64_t gesture_next_at_ = 0;
+  bool gesture_active_ = false;
+  bool in_gesture_step_ = false;  // 重入哨：区分手势步进与外部指令
 };
 
 #endif  // _IRILLE_CAM_GIMBAL_GIMBAL_H_
