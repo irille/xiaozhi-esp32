@@ -139,7 +139,7 @@
 // 这里只是 NVS 为空时的兜底。兜底必须「安全可用」——merged-binary 全刷会清 NVS（§2-2）。
 #define GIMBAL_NVS_NAMESPACE    "gimbal"
 
-#define GIMBAL_PAN_CENTER_US    1600  // 换装日带载实测：正前方 = 1600（8/3 的 1500 旧值作废）
+#define GIMBAL_PAN_CENTER_US    1500  // 换座重标（2026-08-22）：正前方 = 1500。此前 1600 系坏舵机强压把塑料座拧滑所致，换新座后归位
 #define GIMBAL_TILT_CENTER_US   1500  // 换装日实测：定中装配后 1500 = 水平，一次到位
 #define GIMBAL_PAN_UDEG100      (-1000) // 实测：脉宽减小 = 右转 → 正角度(右)对应负向
 #define GIMBAL_TILT_UDEG100     (-1000) // 实测：脉宽增大 = 低头 → 正角度(抬头)对应负向
