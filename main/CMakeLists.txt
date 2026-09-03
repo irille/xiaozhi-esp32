@@ -878,6 +878,8 @@ elseif(CONFIG_BOARD_TYPE_IRILLE_S3_EYE)
     set(BUILTIN_TEXT_FONT font_noto_sans_basic_20_4)
     set(BUILTIN_ICON_FONT font_material_symbols_20_4)
     set(DEFAULT_EMOJI_COLLECTION noto-color-emoji_128)
+elseif(CONFIG_BOARD_TYPE_IRILLE_XIAO_ARM)
+    set(BOARD_TYPE "irille-xiao-arm")
 endif()
 
 if(MANUFACTURER)

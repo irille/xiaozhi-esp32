@@ -591,6 +591,9 @@ choice BOARD_TYPE
     config BOARD_TYPE_IRILLE_S3_EYE
         bool "Irille ESP32-S3-EYE"
         depends on IDF_TARGET_ESP32S3
+    config BOARD_TYPE_IRILLE_XIAO_ARM
+        bool "Irille XIAO ESP32-S3 Sense + 6DOF Arm"
+        depends on IDF_TARGET_ESP32S3
 endchoice
 
 choice XIAOZHI_NETWORK_TYPE
