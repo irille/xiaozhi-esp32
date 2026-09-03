@@ -21,8 +21,11 @@ constexpr int kRequestTimeoutMs =
 constexpr int kRxPollMs = 100;
 // 排空的循环上限：只为防止串口持续来数据时卡住本轮，不是业务约束。
 constexpr int kDrainMaxLines = 16;
-// 排空时单行的读取期限。9600 8N1 下一行最长约 55 ms（51 字节），给 80 ms 有余。
-constexpr int kDrainLineTimeoutMs = 80;
+// 排空时等第一个字节的期限（行内字节走 kInterByteMs）。
+constexpr int kDrainLineTimeoutMs = 20;
+// 行内逐字节超时：9600 8N1 下一个字节约 1.04 ms，给 20 ms 足够容忍下位机
+// 发送期间关中断造成的间隙，又不会在真断流时长时间挂住。
+constexpr int kInterByteMs = 20;
 
 uint32_t NowMs() {
     return static_cast<uint32_t>(esp_timer_get_time() / 1000);
@@ -82,17 +85,28 @@ void ArmLink::RxOwnerTrampoline(void* arg) {
     static_cast<ArmLink*>(arg)->RxOwnerLoop();
 }
 
-// 返回行长；超时返回 0；**超长行返回 -1（整行丢弃）**。
+// 返回行长；无数据返回 0；**超长行返回 -1（整行丢弃）**。
 // 截断后再交给决策器是危险的：一条被截成 "DONE" 的长行会被认成动作完成。
+//
+// ⚠️ `timeout_ms` 只管**等第一个字节**。一旦开始收，后续用逐字节超时——
+// 用一个固定期限管整行会周期性丢包：9600 8N1 下 51 字节的 POS 行要 53 ms，
+// 若它在轮询窗口的末段才开始到达，期限一到已读的一半就被丢掉，一条合法的状态
+// 回报凭空消失，随后超时落锁。这种间歇失败最难查，宁可让本轮多花几十毫秒。
 int ArmLink::ReadLine(char* out, int cap, int timeout_ms) {
     int len = 0;
     bool overflow = false;
-    TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(timeout_ms);
+    bool started = false;
     for (;;) {
         uint8_t ch = 0;
-        TickType_t left = deadline - xTaskGetTickCount();
-        if ((int32_t)left <= 0) return 0;
-        if (uart_read_bytes(ARM_UART_PORT, &ch, 1, left) != 1) return 0;
+        // 首字节用调用方给的期限；开始收行之后，每个字节给 kInterByteMs。
+        TickType_t wait = started ? pdMS_TO_TICKS(kInterByteMs)
+                                  : pdMS_TO_TICKS(timeout_ms);
+        if (uart_read_bytes(ARM_UART_PORT, &ch, 1, wait) != 1) {
+            if (!started) return 0;               // 本轮压根没数据
+            ESP_LOGW(TAG, "rx: line torn mid-frame, dropped (%d B)", len);
+            return -1;                            // 半行作废，不交给决策器
+        }
+        started = true;
         if (ch == '\n') {
             if (overflow) {
                 ESP_LOGW(TAG, "rx: oversized line dropped");

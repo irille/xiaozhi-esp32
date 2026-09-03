@@ -41,8 +41,13 @@ XIAO ESP32-S3 Sense 装在 6DOF 机械臂爪端：xiaozhi 语音端 + `self.arm.
 ```bash
 source ~/esp/esp-idf-v6.0.2/export.sh
 cd firmware
-python scripts/release.py irille-xiao-arm     # 先删同版本 ZIP，否则脚本会当缓存跳过
+VER=$(python -c 'from scripts.release import get_project_version; print(get_project_version())')
+rm -f "releases/v${VER}_irille-xiao-arm.zip"   # ← 不能省
+python scripts/release.py irille-xiao-arm
 ```
+
+⚠️ **`rm` 那行必须真的执行**，不是提醒：同版本 ZIP 若还在，`release.py` 会把它当
+缓存、直接跳过 fullclean 与编译，于是你拿到的是**上一次的固件**而它看起来构建成功了。
 
 体积闸：`build/xiaozhi.bin ≤ 0x280000`（2,621,440 B）。
 

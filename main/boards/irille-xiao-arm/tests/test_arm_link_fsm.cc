@@ -61,6 +61,16 @@ static void BringUpReady(ArmFsm* f, uint32_t* now) {
     CHECK(f->position_known == 1);
 }
 
+// 上电窗口内什么证据都没等到 ⇒ 先问一次 STATUS、无回音再落锁。把 now 推到落锁时刻。
+static void BringUpLocked(ArmFsm* f, uint32_t* now) {
+    *now += 4001;                  // boot_window_ms 到期
+    arm_fsm_on_tick(f, *now);      // 不直接落锁：先问 STATUS
+    *now += 901;                   // + ack_timeout_ms * 3
+    arm_fsm_on_tick(f, *now);
+    CHECK(f->phase == ARM_PHASE_LOCKED_AFTER_RESET);
+    CHECK(f->position_known == 0);
+}
+
 static ArmRequest JointReq(const char* j, int deg) {
     ArmRequest r;
     std::memset(&r, 0, sizeof(r));
@@ -126,7 +136,11 @@ static void TestPosRejectsMalformedValues() {
     CHECK(arm_fsm_parse_pos("POS:A=oops,B=70,C=80,D=90,E=90,F=170;ST=IDLE", j) == 0);
     CHECK(arm_fsm_parse_pos("POS:A=90x,B=70,C=80,D=90,E=90,F=170;ST=IDLE", j) == 0);
     CHECK(arm_fsm_parse_pos("POS:A=,B=70,C=80,D=90,E=90,F=170;ST=IDLE", j) == 0);
-    CHECK(arm_fsm_parse_pos("POS:A=-5,B=70,C=80,D=90,E=90,F=170;ST=IDLE", j) == 1);  // 负号合法
+    // 协议角度限定 0–180（arm-serial.md §2）：越界值是误码，不是"另一个位置"。
+    // strtol 能解析负号 ≠ 协议允许负角度——这条断言原先写反了。
+    CHECK(arm_fsm_parse_pos("POS:A=-5,B=70,C=80,D=90,E=90,F=170;ST=IDLE", j) == 0);
+    CHECK(arm_fsm_parse_pos("POS:A=181,B=70,C=80,D=90,E=90,F=170;ST=IDLE", j) == 0);
+    CHECK(arm_fsm_parse_pos("POS:A=0,B=180,C=80,D=90,E=90,F=170;ST=IDLE", j) == 1);  // 两端合法
 
     // 走完整路径：污染的 POS 不得让 boot 验证解锁
     ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
@@ -173,6 +187,58 @@ static void TestJointRejectsMultiChar() {
     ArmDecision d = arm_fsm_on_request(&f, &r, now);
     CHECK(d.action == ARM_ACT_REPLY);
     CHECK(d.reply.code == ARM_CODE_BAD_ARGUMENT);   // 拒绝，不是截断成 JOINT:A:95
+}
+
+// READY / PONG 的载荷必须是合协议的版本号。带尾巴的 "1.1junk" 若被接受，
+// 一个误码帧就能点亮 collision_guard——board 于是对外宣称有自碰撞防护而板上没有；
+// "READY:garbage" 若被接受，它会置上 ready_seen，后面一个 DONE 加一次 idle 就解锁。
+static void TestVersionAndCollisionGuard() {
+    ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
+    uint32_t now = 1000;
+
+    OnLine(&f, "READY:garbage", now);
+    CHECK(f.ready_seen == 0);          // ★ 不认
+    CHECK(f.link_epoch == 0);
+    OnLine(&f, "READY:1", now);        // 缺 minor
+    CHECK(f.ready_seen == 0);
+    OnLine(&f, "READY:1.junk", now);
+    CHECK(f.ready_seen == 0);
+
+    OnLine(&f, "READY:1.0:04", now);   // 合法
+    CHECK(f.ready_seen == 1);
+    CHECK(f.link_epoch == 1);
+    CHECK(f.fw_major == 1 && f.fw_minor == 0);
+    CHECK(f.collision_guard == 0);
+
+    // PONG 带尾巴不得点亮 collision_guard
+    ArmFsm g; arm_fsm_init(&g, &c);
+    OnLine(&g, "PONG:1.1junk", now);
+    CHECK(g.collision_guard == 0);
+    CHECK(g.fw_major == 0);
+    OnLine(&g, "PONG:1.1", now);
+    CHECK(g.collision_guard == 1);
+}
+
+// boot 窗口内没等到 DONE：不直接落锁，而是发一次 STATUS 问清楚——
+// 那条 DONE 可能只是丢了，而真正的判据一直是 STATUS 而不是 DONE。
+static void TestBootWindowFallsBackToStatus() {
+    ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
+    uint32_t now = 1000;
+    OnLine(&f, "READY:1.0:04", now);
+    CHECK(f.phase == ARM_PHASE_WAIT_BOOT_DONE);
+
+    now += 4001;                       // 窗口到期，一个 DONE 也没见到
+    ArmDecision d = arm_fsm_on_tick(&f, now);
+    CHECK(d.action == ARM_ACT_SEND);   // ★ 先问一次，不是直接落锁
+    CHECK(std::strcmp(d.line, "STATUS") == 0);
+    CHECK(f.phase == ARM_PHASE_VERIFY_BOOT_HOME);
+
+    // 下位机其实早已归位完：确认后照样解锁
+    now += 20;
+    OnLine(&f, "POS:A=90,B=70,C=80,D=90,E=90,F=170;ST=IDLE;ATT=3F", now);
+    CHECK(f.phase == ARM_PHASE_READY);
+    CHECK(f.position_known == 1);
+
 }
 
 // 动作超时 ⇒ 下位机锁存急停（归位超时还会 detach）⇒ 位置不再可信。
@@ -563,9 +629,7 @@ static void TestDoneWithoutReadyStaysLocked() {
     CHECK(f.phase == ARM_PHASE_WAIT_BOOT_DONE);   // 没进验证
     CHECK(f.position_known == 0);
 
-    arm_fsm_on_tick(&f, now + 4001);
-    CHECK(f.phase == ARM_PHASE_LOCKED_AFTER_RESET);
-    CHECK(f.position_known == 0);
+    BringUpLocked(&f, &now);
 }
 
 // ST / ATT 必须整字段比对：子串匹配会让 "ST=IDLE_BOGUS" fail-open
@@ -871,20 +935,15 @@ static void TestVerifyBootHomeSendsOneStatus() {
 static void TestNoReadyFallsToLocked() {
     ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
     uint32_t now = 1000;
-    ArmDecision d = arm_fsm_on_tick(&f, now + 4001);
-    CHECK(f.phase == ARM_PHASE_LOCKED_AFTER_RESET);
-    CHECK(f.position_known == 0);
-    (void)d;
+    BringUpLocked(&f, &now);
 }
 
-// boot 窗口内没等到 DONE ⇒ 落锁
+// boot 窗口内没等到 DONE，随后连 STATUS 也没回音 ⇒ 落锁
 static void TestBootWindowTimeoutFallsToLocked() {
     ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
     uint32_t now = 1000;
     OnLine(&f, "READY:1.0:04", now);
-    arm_fsm_on_tick(&f, now + 4001);
-    CHECK(f.phase == ARM_PHASE_LOCKED_AFTER_RESET);
-    CHECK(f.position_known == 0);
+    BringUpLocked(&f, &now);
 }
 
 // 锁定态放行 HOME，挡住其余运动命令
@@ -892,9 +951,7 @@ static void TestLockedAllowsHomeOnly() {
     ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
     uint32_t now = 1000;
     OnLine(&f, "READY:1.0:04", now);
-    arm_fsm_on_tick(&f, now + 4001);
-    now += 4001;
-    CHECK(f.phase == ARM_PHASE_LOCKED_AFTER_RESET);
+    BringUpLocked(&f, &now);
 
     ArmRequest j = JointReq("A", 95);
     ArmDecision d = arm_fsm_on_request(&f, &j, now);
@@ -924,8 +981,7 @@ static void TestRecoveryHomeSuccess() {
     ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
     uint32_t now = 1000;
     OnLine(&f, "READY:1.0:04", now);
-    arm_fsm_on_tick(&f, now + 4001);
-    now += 4001;
+    BringUpLocked(&f, &now);
 
     ArmRequest home = SimpleReq(ARM_REQ_HOME);
     arm_fsm_on_request(&f, &home, now);
@@ -944,8 +1000,7 @@ static void TestRecoveryHomeFailureExits() {
         ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
         uint32_t now = 1000;
         OnLine(&f, "READY:1.0:04", now);
-        arm_fsm_on_tick(&f, now + 4001);
-        now += 4001;
+        BringUpLocked(&f, &now);
 
         ArmRequest home = SimpleReq(ARM_REQ_HOME);
         arm_fsm_on_request(&f, &home, now);
@@ -963,8 +1018,7 @@ static void TestRecoveryHomeFailureExits() {
     ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
     uint32_t now = 1000;
     OnLine(&f, "READY:1.0:04", now);
-    arm_fsm_on_tick(&f, now + 4001);
-    now += 4001;
+    BringUpLocked(&f, &now);
     ArmRequest home = SimpleReq(ARM_REQ_HOME);
     arm_fsm_on_request(&f, &home, now);
     for (int i = 0; i < 3; ++i) { now += 301; arm_fsm_on_tick(&f, now); }
@@ -1044,19 +1098,6 @@ static void TestParsePos() {
 }
 
 // ------------------------------------------------------------------ 版本与映射
-static void TestVersionAndCollisionGuard() {
-    ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
-    uint32_t now = 1000;
-    OnLine(&f, "READY:1.0:04", now);
-    CHECK(f.fw_major == 1 && f.fw_minor == 0);
-    CHECK(f.collision_guard == 0);
-
-    ArmFsm g; arm_fsm_init(&g, &c);
-    OnLine(&g, "PONG:1.1", now);
-    CHECK(g.fw_major == 1 && g.fw_minor == 1);
-    CHECK(g.collision_guard == 1);
-}
-
 // COLLISION 在两个版本下都能识别并映射（v1.0 只是不会收到它）
 static void TestCollisionMappedOnBothVersions() {
     for (const char* ready : {"READY:1.0:04", "READY:1.1:04"}) {
@@ -1162,6 +1203,7 @@ int main() {
     TestVerifyBootHomeSendsOneStatus();
     TestNoReadyFallsToLocked();
     TestBootWindowTimeoutFallsToLocked();
+    TestBootWindowFallsBackToStatus();
     TestLockedAllowsHomeOnly();
     TestRecoveryHomeSuccess();
     TestRecoveryHomeFailureExits();

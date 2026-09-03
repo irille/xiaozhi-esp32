@@ -280,14 +280,24 @@ static void enter_wait_boot(ArmFsm* f, uint32_t now_ms) {
     f->boot_window_start_ms = now_ms;
 }
 
-static void parse_version(ArmFsm* f, const char* p) {
-    int major = 0, minor = 0;
-    if (sscanf(p, "%d.%d", &major, &minor) == 2) {
-        f->fw_major = major;
-        f->fw_minor = minor;
-        f->collision_guard = (major > 1 || (major == 1 && minor >= 1)) ? 1 : 0;
-        f->version_probe_sent = 1;   // 已知版本，不必再探
-    }
+// 严格解析 `<major>.<minor>`，之后必须是行尾或 ':'（READY 的 mcusr 字段）。
+// sscanf("%d.%d") 会接受 "1.1junk" 这类带尾巴的输入——那足以让一个误码帧
+// 把 collision_guard 点亮，board 于是对外宣称具备自碰撞防护而板上其实没有。
+static int parse_version(ArmFsm* f, const char* p) {
+    char* end = NULL;
+    long major = strtol(p, &end, 10);
+    if (end == p || *end != '.') return 0;
+    const char* q = end + 1;
+    long minor = strtol(q, &end, 10);
+    if (end == q) return 0;
+    if (*end != '\0' && *end != ':') return 0;
+    if (major < 0 || major > 99 || minor < 0 || minor > 99) return 0;
+
+    f->fw_major = (int)major;
+    f->fw_minor = (int)minor;
+    f->collision_guard = (major > 1 || (major == 1 && minor >= 1)) ? 1 : 0;
+    f->version_probe_sent = 1;   // 已知版本，不必再探
+    return 1;
 }
 
 // 找 `key`，且要求它出现在**字段边界**上——行首，或紧跟 ':' / ';' / ','。
@@ -346,6 +356,9 @@ int arm_fsm_parse_pos(const char* line, int out_joints[6]) {
         long v = strtol(p, &end, 10);
         if (end == p) continue;                 // 一个数字都没吃到
         if (*end != ',' && *end != ';' && *end != '\0') continue;  // 数字后面还有尾巴
+        // 协议角度限定 0–180（arm-serial.md §2）。负数或越界值不是"另一个位置"，
+        // 是误码——缓存它会让 status 对外报一个不可能的姿态。
+        if (v < 0 || v > 180) continue;
         out_joints[i] = (int)v;
         ++got;
     }
@@ -515,7 +528,11 @@ ArmDecision arm_fsm_on_line(ArmFsm* f, const char* line, uint32_t rx_generation,
 
     // ---- 对端复位：任何状态下都立即降级 ----
     if (kind == ARM_LINE_READY) {
-        parse_version(f, line + 6);
+        // 载荷不合协议就是误码帧，**不得**据此改链路状态：`READY:garbage` 若被认，
+        // 它会置上 ready_seen，后面一个 DONE 加一次 idle 状态就能解锁机械臂。
+        if (!parse_version(f, line + 6)) {
+            return none_();
+        }
         f->link_epoch++;
         // 谁在等，谁就立刻拿到 RESET。拖到 IO 层的兜底超时才回复会突破主循环
         // 占用上界（宪法 III.2）——那条上界正是靠"决策器总在上界内给出答复"成立的。
@@ -678,11 +695,19 @@ ArmDecision arm_fsm_on_line(ArmFsm* f, const char* line, uint32_t rx_generation,
 // ---------------------------------------------------------------- on_tick
 
 ArmDecision arm_fsm_on_tick(ArmFsm* f, uint32_t now_ms) {
-    // 上电窗口超时：包括「board 启动晚于下位机、始终没见 READY」这一路。
-    // 没有完整的 READY → DONE 证据链就不得认定位置已知。
-    // phase 本身就是闸——落锁会把它改成 LOCKED_AFTER_RESET，这段不会再进第二次。
-    if ((f->phase == ARM_PHASE_WAIT_BOOT_DONE || f->phase == ARM_PHASE_VERIFY_BOOT_HOME) &&
+    // 上电窗口内没等到 boot 归位的 DONE。不直接落锁——那条 DONE 可能只是丢了，
+    // 下位机其实已经归位完毕。**真正的判据一直是 STATUS**（IDLE + ATT=3F），
+    // DONE 只是"可以去问了"的提早触发；串口终态不带标识，本来就分不清收到的
+    // DONE 是 boot 归位的还是复位前那条动作的孤儿。所以这里也发一次 STATUS。
+    if (f->phase == ARM_PHASE_WAIT_BOOT_DONE &&
         elapsed_past(now_ms, f->boot_window_start_ms, f->boot_window_ms)) {
+        f->phase = ARM_PHASE_VERIFY_BOOT_HOME;
+        f->boot_window_start_ms = now_ms;   // 给这次确认本身一个期限
+        return send_("STATUS");
+    }
+    // 连确认都没回音（含 board 启动晚于下位机、始终没见过 READY）⇒ 落锁。
+    if (f->phase == ARM_PHASE_VERIFY_BOOT_HOME &&
+        elapsed_past(now_ms, f->boot_window_start_ms, f->ack_timeout_ms * 3)) {
         lock_position_lost(f);
         return none_();
     }
