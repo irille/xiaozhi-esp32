@@ -225,7 +225,15 @@ void ArmLink::Execute(ArmDecision d) {
 
 ArmReply ArmLink::Request(const ArmRequest& req) {
     xSemaphoreTake(mutex_, portMAX_DELAY);
-    // 清掉可能残留的一次 give（上一轮超时后迟到的 REPLY）
+    // STOP 之前先排空缓冲。上一次 STOP 若以超时收场，它那三条 OK:STOPPED 可能还
+    // 躺在里面；而 stop_ack_count 每次请求归零，那条旧回声就会被算作本次的确认——
+    // 于是在链路其实没应答时谎报"已停止"。FR-019b 要求确认必须是本次自己的。
+    // 排空必须在 stop_pending 置位**之前**：那时决策器把无主的 OK:STOPPED 当多余
+    // 回声吃掉，正是我们要的。排空自身可能产生 REPLY，所以放在清 reply_sem_ 之前。
+    if (req.kind == ARM_REQ_STOP) {
+        DrainPending(fsm_.operation_generation);
+    }
+    // 清掉可能残留的一次 give（上一轮超时后迟到的 REPLY，或上面排空产生的）
     xSemaphoreTake(reply_sem_, 0);
     ArmDecision d = arm_fsm_on_request(&fsm_, &req, NowMs());
     if (d.action == ARM_ACT_REPLY) {

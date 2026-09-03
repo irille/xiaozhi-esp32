@@ -938,6 +938,22 @@ static void TestNoReadyFallsToLocked() {
     BringUpLocked(&f, &now);
 }
 
+// 没见过 READY ⇒ 窗口到期直接落锁，连 STATUS 都不问。
+// board 启动晚于下位机时，下位机闲在**任意位置**也会回 IDLE;ATT=3F——那不是归位
+// 证据。回退问 STATUS 的机制只对"见过 READY、DONE 丢了"成立，别越界。
+static void TestNoReadyNeverUnlocksFromStatus() {
+    ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
+    uint32_t now = 1000 + 4001;
+    ArmDecision d = arm_fsm_on_tick(&f, now);
+    CHECK(d.action == ARM_ACT_NONE);                 // ★ 不问
+    CHECK(f.phase == ARM_PHASE_LOCKED_AFTER_RESET);
+
+    now += 20;                                       // 就算状态自己送上门
+    OnLine(&f, "POS:A=90,B=70,C=80,D=90,E=90,F=170;ST=IDLE;ATT=3F", now);
+    CHECK(f.phase == ARM_PHASE_LOCKED_AFTER_RESET);  // 仍然锁定
+    CHECK(f.position_known == 0);
+}
+
 // boot 窗口内没等到 DONE，随后连 STATUS 也没回音 ⇒ 落锁
 static void TestBootWindowTimeoutFallsToLocked() {
     ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
@@ -1204,6 +1220,7 @@ int main() {
     TestNoReadyFallsToLocked();
     TestBootWindowTimeoutFallsToLocked();
     TestBootWindowFallsBackToStatus();
+    TestNoReadyNeverUnlocksFromStatus();
     TestLockedAllowsHomeOnly();
     TestRecoveryHomeSuccess();
     TestRecoveryHomeFailureExits();

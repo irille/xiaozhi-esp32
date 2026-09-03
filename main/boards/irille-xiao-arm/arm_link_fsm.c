@@ -701,6 +701,14 @@ ArmDecision arm_fsm_on_tick(ArmFsm* f, uint32_t now_ms) {
     // DONE 是 boot 归位的还是复位前那条动作的孤儿。所以这里也发一次 STATUS。
     if (f->phase == ARM_PHASE_WAIT_BOOT_DONE &&
         elapsed_past(now_ms, f->boot_window_start_ms, f->boot_window_ms)) {
+        // 但**没见过本纪元的 READY** 就没有"上电归位"这回事可谈（board 启动晚于
+        // 下位机，或 READY 整条丢了）。那种情况下一条 IDLE;ATT=3F 只说明下位机
+        // 此刻闲着——它可能停在任意位置，不构成归位证据。裁定 5 要求保持 LOCKED，
+        // 由 self.arm.home 显式恢复；去问 STATUS 反而会把无主状态当成解锁依据。
+        if (!f->ready_seen) {
+            lock_position_lost(f);
+            return none_();
+        }
         f->phase = ARM_PHASE_VERIFY_BOOT_HOME;
         f->boot_window_start_ms = now_ms;   // 给这次确认本身一个期限
         return send_("STATUS");
