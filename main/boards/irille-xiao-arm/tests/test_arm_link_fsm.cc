@@ -61,11 +61,11 @@ static void BringUpReady(ArmFsm* f, uint32_t* now) {
     CHECK(f->position_known == 1);
 }
 
-static ArmRequest JointReq(char j, int deg) {
+static ArmRequest JointReq(const char* j, int deg) {
     ArmRequest r;
     std::memset(&r, 0, sizeof(r));
     r.kind = ARM_REQ_JOINT;
-    r.joint = j;
+    std::snprintf(r.joint, sizeof(r.joint), "%s", j);
     r.angle = deg;
     return r;
 }
@@ -114,14 +114,75 @@ static void TestClassify() {
     CHECK(arm_fsm_classify("DONE:CONTACT") == ARM_LINE_MALFORMED);  // 未实现的变体
 }
 
-// 动作超时 ⇒ 下位机已锁存急停并 detach ⇒ 位置不再可信。
+// ---------------------------------------------------- 状态回报的 fail-open 防线
+// 下面三条都是"畸形回报骗过 boot 验证、让 position_known 变真"这一类，
+// PR review 逐条抓出来的。它们的共同点是：单看某个片段像合法数据。
+
+// POS 的每个关节角必须是**完整的十进制整数**。strtol 对 "oops" 返回 0、
+// 对 "90x" 返回 90 都不报错——只要还给计数，污染的坐标就会被当成有效位置。
+static void TestPosRejectsMalformedValues() {
+    int j[6] = {0};
+    CHECK(arm_fsm_parse_pos("POS:A=90,B=70,C=80,D=90,E=90,F=170;ST=IDLE;ATT=3F", j) == 1);
+    CHECK(arm_fsm_parse_pos("POS:A=oops,B=70,C=80,D=90,E=90,F=170;ST=IDLE", j) == 0);
+    CHECK(arm_fsm_parse_pos("POS:A=90x,B=70,C=80,D=90,E=90,F=170;ST=IDLE", j) == 0);
+    CHECK(arm_fsm_parse_pos("POS:A=,B=70,C=80,D=90,E=90,F=170;ST=IDLE", j) == 0);
+    CHECK(arm_fsm_parse_pos("POS:A=-5,B=70,C=80,D=90,E=90,F=170;ST=IDLE", j) == 1);  // 负号合法
+
+    // 走完整路径：污染的 POS 不得让 boot 验证解锁
+    ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
+    uint32_t now = 1000;
+    OnLine(&f, "READY:1.0:04", now);
+    now += 100;
+    OnLine(&f, "DONE", now);
+    now += 20;
+    OnLine(&f, "POS:A=oops,B=70,C=80,D=90,E=90,F=170;ST=IDLE;ATT=3F", now);
+    CHECK(f.has_pos == 0);          // 没缓存污染坐标
+    // ST/ATT 本身合法，boot 验证放行是可以的；关键是位置数据没被污染
+}
+
+// 字段名必须在**字段边界**上。strstr 不验前驱，";XST=IDLE;XATT=3F" 里的
+// "ST=" / "ATT=" 会被当成真字段，一行畸形回报就能骗开 boot 验证。
+static void TestStatusKeysNeedFieldBoundary() {
+    ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
+    uint32_t now = 1000;
+    OnLine(&f, "READY:1.0:04", now);
+    now += 100;
+    OnLine(&f, "DONE", now);
+    CHECK(f.phase == ARM_PHASE_VERIFY_BOOT_HOME);
+    now += 20;
+    OnLine(&f, "POS:A=90,B=70,C=80,D=90,E=90,F=170;XST=IDLE;XATT=3F", now);
+    CHECK(f.phase == ARM_PHASE_LOCKED_AFTER_RESET);   // ★ 不认伪字段
+    CHECK(f.position_known == 0);
+}
+
+// 关节名必须**恰好一个字符**。上游若先取首字符，"Afoo" 就被静默截断成合法的 "A"，
+// 白名单形同虚设——而 FR-010a 明写 MUST NOT 截断。
+static void TestJointRejectsMultiChar() {
+    CHECK(arm_fsm_joint_is_valid("A") == 1);
+    CHECK(arm_fsm_joint_is_valid("F") == 1);
+    CHECK(arm_fsm_joint_is_valid("Afoo") == 0);
+    CHECK(arm_fsm_joint_is_valid("A:B") == 0);
+    CHECK(arm_fsm_joint_is_valid("") == 0);
+    CHECK(arm_fsm_joint_is_valid("G") == 0);
+    CHECK(arm_fsm_joint_is_valid(nullptr) == 0);
+
+    ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
+    uint32_t now = 1000;
+    BringUpReady(&f, &now);
+    ArmRequest r = JointReq("Afoo", 95);
+    ArmDecision d = arm_fsm_on_request(&f, &r, now);
+    CHECK(d.action == ARM_ACT_REPLY);
+    CHECK(d.reply.code == ARM_CODE_BAD_ARGUMENT);   // 拒绝，不是截断成 JOINT:A:95
+}
+
+// 动作超时 ⇒ 下位机锁存急停（归位超时还会 detach）⇒ 位置不再可信。
 // 这条路径原先漏了降级：board 侧继续报 position_known，下一条动作照发。
 static void TestTimeoutForfeitsPosition() {
     ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
     uint32_t now = 1000;
     BringUpReady(&f, &now);
 
-    ArmRequest r = JointReq('A', 95);
+    ArmRequest r = JointReq("A", 95);
     arm_fsm_on_request(&f, &r, now);
     now += 30;
     OnLine(&f, "OK:2000", now);
@@ -135,7 +196,7 @@ static void TestTimeoutForfeitsPosition() {
     CHECK(f.phase == ARM_PHASE_LOCKED_AFTER_RESET);    // ★ 必须落锁
 
     // 此后普通运动被挡，只放行 home
-    ArmRequest j = JointReq('B', 70);
+    ArmRequest j = JointReq("B", 70);
     ArmDecision d = arm_fsm_on_request(&f, &j, now);
     CHECK(d.action == ARM_ACT_REPLY);
     CHECK(d.reply.ok == 0);
@@ -150,7 +211,7 @@ static void TestAcceptAndDone() {
     uint32_t now = 1000;
     BringUpReady(&f, &now);
 
-    ArmRequest r = JointReq('A', 95);
+    ArmRequest r = JointReq("A", 95);
     ArmDecision d = arm_fsm_on_request(&f, &r, now);
     CHECK(d.action == ARM_ACT_SEND);
     CHECK(std::strcmp(d.line, "JOINT:A:95") == 0);
@@ -176,7 +237,7 @@ static void TestTerminalBeforeAckDiscarded() {
     uint32_t now = 1000;
     BringUpReady(&f, &now);
 
-    ArmRequest r = JointReq('B', 75);
+    ArmRequest r = JointReq("B", 75);
     arm_fsm_on_request(&f, &r, now);
     CHECK(f.op_state == ARM_OP_PENDING_ACCEPTANCE);
 
@@ -193,7 +254,7 @@ static void TestStaleTerminalAcrossGeneration() {
     BringUpReady(&f, &now);
 
     // 操作 1 受理后一直不给终态，直到 deadline 到期
-    ArmRequest r1 = JointReq('A', 100);
+    ArmRequest r1 = JointReq("A", 100);
     arm_fsm_on_request(&f, &r1, now);
     now += 50;
     OnLine(&f, "OK:1000", now);
@@ -213,7 +274,7 @@ static void TestStaleTerminalAcrossGeneration() {
     CHECK(f.operation_generation != gen1);         // 清场后世代已推进
 
     // 操作 2
-    ArmRequest r2 = JointReq('B', 80);
+    ArmRequest r2 = JointReq("B", 80);
     d = arm_fsm_on_request(&f, &r2, now);
     CHECK(d.action == ARM_ACT_SEND);
     now += 30;
@@ -238,7 +299,7 @@ static void TestStaleTerminalAcrossEpoch() {
     uint32_t now = 1000;
     BringUpReady(&f, &now);
 
-    ArmRequest r = JointReq('C', 60);
+    ArmRequest r = JointReq("C", 60);
     arm_fsm_on_request(&f, &r, now);
     now += 50;
     OnLine(&f, "OK:2000", now);
@@ -266,7 +327,7 @@ static void TestRetryExhausted() {
     uint32_t now = 1000;
     BringUpReady(&f, &now);
 
-    ArmRequest r = JointReq('D', 100);
+    ArmRequest r = JointReq("D", 100);
     ArmDecision d = arm_fsm_on_request(&f, &r, now);
     CHECK(d.action == ARM_ACT_SEND);
     CHECK(f.op_attempts == 1);
@@ -295,7 +356,7 @@ static void TestBusyInferredAcceptance() {
     uint32_t now = 1000;
     BringUpReady(&f, &now);
 
-    ArmRequest r = JointReq('A', 120);
+    ArmRequest r = JointReq("A", 120);
     arm_fsm_on_request(&f, &r, now);
     now += 301;
     arm_fsm_on_tick(&f, now);                 // 重发
@@ -379,7 +440,7 @@ static void TestImmediateRejections() {
         ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
         uint32_t now = 1000;
         BringUpReady(&f, &now);
-        ArmRequest r = JointReq('A', 95);
+        ArmRequest r = JointReq("A", 95);
         arm_fsm_on_request(&f, &r, now);
         now += 30;
         ArmDecision d = OnLine(&f, tc.line, now);
@@ -431,12 +492,12 @@ static void TestArgumentWhitelist() {
     CHECK(d.reply.code == ARM_CODE_BAD_ARGUMENT);
 
     // 关节字母越界
-    ArmRequest badjoint = JointReq('Z', 90);
+    ArmRequest badjoint = JointReq("Z", 90);
     d = arm_fsm_on_request(&f, &badjoint, now);
     CHECK(d.reply.code == ARM_CODE_BAD_ARGUMENT);
 
     // 角度越界（协议 §5.8 的解析层格式校验，不是关节限位）
-    ArmRequest badangle = JointReq('A', 200);
+    ArmRequest badangle = JointReq("A", 200);
     d = arm_fsm_on_request(&f, &badangle, now);
     CHECK(d.reply.code == ARM_CODE_BAD_ARGUMENT);
 
@@ -444,9 +505,9 @@ static void TestArgumentWhitelist() {
     CHECK(arm_fsm_name_is_valid("READY") == 1);
     CHECK(arm_fsm_name_is_valid("READY_ABOVE") == 1);
     CHECK(arm_fsm_name_is_valid("BIN_1") == 1);
-    CHECK(arm_fsm_joint_is_valid('A') == 1);
-    CHECK(arm_fsm_joint_is_valid('F') == 1);
-    CHECK(arm_fsm_joint_is_valid('G') == 0);
+    CHECK(arm_fsm_joint_is_valid("A") == 1);
+    CHECK(arm_fsm_joint_is_valid("F") == 1);
+    CHECK(arm_fsm_joint_is_valid("G") == 0);
 
     ArmRequest good = NamedReq(ARM_REQ_MOVE_PRESET, "READY");
     d = arm_fsm_on_request(&f, &good, now);
@@ -461,7 +522,7 @@ static void TestAllTerminalsBeforeAckDiscarded() {
         ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
         uint32_t now = 1000;
         BringUpReady(&f, &now);
-        ArmRequest r = JointReq('B', 75);
+        ArmRequest r = JointReq("B", 75);
         arm_fsm_on_request(&f, &r, now);
         now += 10;
         ArmDecision d = OnLine(&f, t, now);
@@ -477,7 +538,7 @@ static void TestQuiesceNonIdleFailsClosed() {
         ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
         uint32_t now = 1000;
         BringUpReady(&f, &now);
-        ArmRequest r = JointReq('A', 100);
+        ArmRequest r = JointReq("A", 100);
         arm_fsm_on_request(&f, &r, now);
         now += 30;
         OnLine(&f, "OK:500", now);
@@ -539,7 +600,7 @@ static void TestReadyWakesWaiters() {
     uint32_t now = 1000;
     BringUpReady(&f, &now);
 
-    ArmRequest r = JointReq('A', 95);
+    ArmRequest r = JointReq("A", 95);
     arm_fsm_on_request(&f, &r, now);
     CHECK(f.op_state == ARM_OP_PENDING_ACCEPTANCE);
     now += 20;
@@ -579,7 +640,7 @@ static void TestNonIdempotentProbeSilenceFailsClosed() {
     CHECK(f.phase == ARM_PHASE_LOCKED_AFTER_RESET);
 
     // 此后普通运动被挡，只放行 home
-    ArmRequest j = JointReq('A', 95);
+    ArmRequest j = JointReq("A", 95);
     d = arm_fsm_on_request(&f, &j, now);
     CHECK(d.action == ARM_ACT_REPLY);
     CHECK(d.reply.ok == 0);
@@ -592,7 +653,7 @@ static void TestArmMovingTracksOperation() {
     BringUpReady(&f, &now);
     CHECK(f.arm_moving == 0);
 
-    ArmRequest r = JointReq('A', 95);
+    ArmRequest r = JointReq("A", 95);
     arm_fsm_on_request(&f, &r, now);
     now += 30;
     OnLine(&f, "OK:2000", now);
@@ -609,7 +670,7 @@ static void TestInvalidSpeedRejected() {
     uint32_t now = 1000;
     BringUpReady(&f, &now);
 
-    ArmRequest r = JointReq('A', 95);
+    ArmRequest r = JointReq("A", 95);
     r.ramp_ms = -1;                    // 工具层对未知档返回 -1
     ArmDecision d = arm_fsm_on_request(&f, &r, now);
     CHECK(d.action == ARM_ACT_REPLY);
@@ -626,12 +687,12 @@ static void TestLocalBusy() {
     uint32_t now = 1000;
     BringUpReady(&f, &now);
 
-    ArmRequest r1 = JointReq('A', 95);
+    ArmRequest r1 = JointReq("A", 95);
     arm_fsm_on_request(&f, &r1, now);
     now += 30;
     OnLine(&f, "OK:2000", now);
 
-    ArmRequest r2 = JointReq('B', 70);
+    ArmRequest r2 = JointReq("B", 70);
     ArmDecision d = arm_fsm_on_request(&f, &r2, now);
     CHECK(d.action == ARM_ACT_REPLY);         // 不下发
     CHECK(d.reply.ok == 0);
@@ -644,7 +705,7 @@ static void TestStopBypassesMutex() {
     uint32_t now = 1000;
     BringUpReady(&f, &now);
 
-    ArmRequest r = JointReq('A', 150);
+    ArmRequest r = JointReq("A", 150);
     arm_fsm_on_request(&f, &r, now);
     now += 30;
     OnLine(&f, "OK:5000", now);
@@ -663,7 +724,7 @@ static void TestStopAckCounting() {
     uint32_t now = 1000;
     BringUpReady(&f, &now);
 
-    ArmRequest r = JointReq('A', 150);
+    ArmRequest r = JointReq("A", 150);
     arm_fsm_on_request(&f, &r, now);
     now += 30;
     OnLine(&f, "OK:5000", now);
@@ -685,7 +746,7 @@ static void TestStopAckCounting() {
     CHECK(d.action == ARM_ACT_NONE);
 
     // 后续新动作不受残留影响
-    ArmRequest r2 = JointReq('B', 70);
+    ArmRequest r2 = JointReq("B", 70);
     d = arm_fsm_on_request(&f, &r2, now);
     CHECK(d.action == ARM_ACT_SEND);
 }
@@ -715,7 +776,7 @@ static void TestQuiesceIdleReleases() {
     uint32_t now = 1000;
     BringUpReady(&f, &now);
 
-    ArmRequest r = JointReq('A', 100);
+    ArmRequest r = JointReq("A", 100);
     arm_fsm_on_request(&f, &r, now);
     now += 30;
     OnLine(&f, "OK:500", now);
@@ -732,7 +793,7 @@ static void TestQuiesceIdleReleases() {
     d = OnLine(&f, "POS:A=100;ST=IDLE;ATT=3F", now);
     CHECK(d.action == ARM_ACT_NONE);          // 无等待者
     CHECK(f.operation_generation != gen);            // 确认空闲后才递增
-    ArmRequest r2 = JointReq('B', 70);
+    ArmRequest r2 = JointReq("B", 70);
     d = arm_fsm_on_request(&f, &r2, now);
     CHECK(d.action == ARM_ACT_SEND);          // 槽已释放
 }
@@ -743,7 +804,7 @@ static void TestQuiesceMovingKeepsWaiting() {
     uint32_t now = 1000;
     BringUpReady(&f, &now);
 
-    ArmRequest r = JointReq('A', 100);
+    ArmRequest r = JointReq("A", 100);
     arm_fsm_on_request(&f, &r, now);
     now += 30;
     OnLine(&f, "OK:500", now);
@@ -761,7 +822,7 @@ static void TestQuiesceMovingKeepsWaiting() {
     d = OnLine(&f, "DONE", now);     // 终态终于到了
     CHECK(d.action == ARM_ACT_NONE);          // 工具早已返回，这里只收尾
     CHECK(f.op_state == ARM_OP_DONE);
-    ArmRequest r2 = JointReq('B', 70);
+    ArmRequest r2 = JointReq("B", 70);
     d = arm_fsm_on_request(&f, &r2, now);
     CHECK(d.action == ARM_ACT_SEND);          // 槽已释放，没有死锁
 }
@@ -835,7 +896,7 @@ static void TestLockedAllowsHomeOnly() {
     now += 4001;
     CHECK(f.phase == ARM_PHASE_LOCKED_AFTER_RESET);
 
-    ArmRequest j = JointReq('A', 95);
+    ArmRequest j = JointReq("A", 95);
     ArmDecision d = arm_fsm_on_request(&f, &j, now);
     CHECK(d.action == ARM_ACT_REPLY);
     CHECK(d.reply.ok == 0);
@@ -935,7 +996,7 @@ static void TestStatusDoesNotPollWhileMoving() {
     BringUpReady(&f, &now);
     CHECK(arm_fsm_status_needs_uart(&f) == 1);   // 空闲时可查
 
-    ArmRequest r = JointReq('A', 95);
+    ArmRequest r = JointReq("A", 95);
     arm_fsm_on_request(&f, &r, now);
     now += 30;
     OnLine(&f, "OK:3000", now);
@@ -1008,7 +1069,7 @@ static void TestCollisionMappedOnBothVersions() {
         OnLine(&f, "POS:A=90;ST=IDLE;ATT=3F", now);
         CHECK(f.phase == ARM_PHASE_READY);
 
-        ArmRequest r = JointReq('C', 40);
+        ArmRequest r = JointReq("C", 40);
         arm_fsm_on_request(&f, &r, now);
         now += 30;
         ArmDecision d = OnLine(&f, "ERROR:COLLISION", now);
@@ -1044,7 +1105,7 @@ static void TestCommandRendering() {
     BringUpReady(&f, &now);
 
     struct { ArmRequest req; const char* expect; } cases[] = {
-        {JointReq('A', 95), "JOINT:A:95"},
+        {JointReq("A", 95), "JOINT:A:95"},
         {SimpleReq(ARM_REQ_GRIP_OPEN), "GRIP_OPEN"},
         {SimpleReq(ARM_REQ_GRIP_CLOSE), "GRIP_CLOSE"},
         {NamedReq(ARM_REQ_MOVE_PRESET, "READY"), "MOVE_PRESET:READY"},
@@ -1060,7 +1121,7 @@ static void TestCommandRendering() {
 
     // 带速度档的 JOINT
     ArmFsm g = f;
-    ArmRequest r = JointReq('B', 70);
+    ArmRequest r = JointReq("B", 70);
     r.ramp_ms = 50;
     ArmDecision d = arm_fsm_on_request(&g, &r, now);
     CHECK(std::strcmp(d.line, "JOINT:B:70:50") == 0);
@@ -1068,6 +1129,9 @@ static void TestCommandRendering() {
 
 int main() {
     TestClassify();
+    TestPosRejectsMalformedValues();
+    TestStatusKeysNeedFieldBoundary();
+    TestJointRejectsMultiChar();
     TestTimeoutForfeitsPosition();
     TestAcceptAndDone();
     TestTerminalBeforeAckDiscarded();

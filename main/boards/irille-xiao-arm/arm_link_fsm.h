@@ -99,9 +99,11 @@ typedef enum {
 
 typedef struct {
     ArmReqKind kind;
-    char joint;        // JOINT: 'A'..'F'
+    // JOINT 的关节名按**原样**传进来（不是单个 char）：调用方若先取首字符，
+    // "Afoo" 就被静默截断成合法的 "A" 了——截断是决策器要拒的事，不该在上游发生。
+    char joint[8];
     int  angle;        // JOINT: 度
-    int  ramp_ms;      // JOINT: 每度毫秒，0 = 省略
+    int  ramp_ms;      // JOINT: 每度毫秒，0 = 省略，负数 = 上游给了未知档位
     char name[16];     // MOVE_PRESET / PICK / PLACE
 } ArmRequest;
 
@@ -232,7 +234,7 @@ ArmDecision arm_fsm_on_tick(ArmFsm* fsm, uint32_t now_ms);
 // 参数白名单校验（供测试直接调用）：名字 [A-Z0-9_]{1,14}、关节 A-F。
 // **不做转义**——不合规直接拒绝，免得把换行拼进命令行、注入第二条指令。
 int arm_fsm_name_is_valid(const char* name);
-int arm_fsm_joint_is_valid(char joint);
+int arm_fsm_joint_is_valid(const char* joint);
 
 // 供测试与状态查询共用的纯函数
 ArmLineKind arm_fsm_classify(const char* line);

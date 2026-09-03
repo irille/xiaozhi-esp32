@@ -210,8 +210,10 @@ inline void Register(ArmLink& link) {
                               Property("speed", kPropertyTypeString, std::string("normal"))}),
                 [&link](const PropertyList& p) -> ReturnValue {
                     ArmRequest r = MakeReq(ARM_REQ_JOINT);
-                    std::string j = p["joint"].value<std::string>();
-                    r.joint = j.empty() ? '?' : j[0];
+                    // 原样带过去：这里若先取首字符，"Afoo" 就被静默截断成合法的
+                    // "A" 了。截断该由决策器拒，不是在这里悄悄发生（FR-010a）。
+                    std::snprintf(r.joint, sizeof r.joint, "%s",
+                                  p["joint"].value<std::string>().c_str());
                     r.angle = p["angle"].value<int>();
                     r.ramp_ms = RampMsOf(p["speed"].value<std::string>());
                     return ReplyToJsonOrThrow(link.Request(r));

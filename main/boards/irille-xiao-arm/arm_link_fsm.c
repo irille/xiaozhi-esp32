@@ -139,8 +139,10 @@ const char* arm_fsm_op_state_name(ArmOpState st) {
 // **不做转义**：不合规直接拒绝。转义只会把问题藏起来——一个带换行的预设名若被
 // 拼进命令行，就是第二条 UART 指令，足以绕过"RELAX 不向 agent 暴露"这条边界。
 
-int arm_fsm_joint_is_valid(char joint) {
-    return joint >= 'A' && joint <= 'F';
+// 必须**恰好一个字符**且在 A–F。"Afoo" 不算——上游若先取首字符再送进来，
+// 这条白名单就成了摆设：多余的尾巴被悄悄截掉，而 FR-010a 明写 MUST NOT 截断。
+int arm_fsm_joint_is_valid(const char* joint) {
+    return joint && joint[0] >= 'A' && joint[0] <= 'F' && joint[1] == '\0';
 }
 
 int arm_fsm_name_is_valid(const char* name) {
@@ -288,16 +290,30 @@ static void parse_version(ArmFsm* f, const char* p) {
     }
 }
 
-// 取 `key=` 字段的值并与 want 整体比较。**不能用 strstr**：那样 `ST=IDLE_BOGUS`
-// 会被当成 IDLE，清场与 boot 验证双双 fail-open。字段以 ';' 分隔或行尾结束。
+// 找 `key`，且要求它出现在**字段边界**上——行首，或紧跟 ':' / ';' / ','。
+// 光用 strstr 不验前驱，`;XST=IDLE;XATT=3F` 里的 "ST=" / "ATT=" 会被当成真字段名，
+// boot 验证就被一行畸形回报骗开了。
+static const char* find_field(const char* line, const char* key) {
+    size_t klen = strlen(key);
+    for (const char* p = strstr(line, key); p != NULL; p = strstr(p + klen, key)) {
+        if (p == line) return p;
+        char prev = p[-1];
+        if (prev == ':' || prev == ';' || prev == ',') return p;
+    }
+    return NULL;
+}
+
+// 取 `key=` 字段的值并与 want 整体比较。两端都要验：键必须在字段边界上（见
+// find_field），值必须整体相等而不是前缀——否则 `ST=IDLE_BOGUS` 会被当成 IDLE，
+// 清场与 boot 验证双双 fail-open。
 static int field_equals(const char* line, const char* key, const char* want) {
-    const char* p = strstr(line, key);
+    const char* p = find_field(line, key);
     if (!p) return 0;
     p += strlen(key);
     size_t n = strlen(want);
     if (strncmp(p, want, n) != 0) return 0;
     char after = p[n];
-    return after == '\0' || after == ';';
+    return after == '\0' || after == ';' || after == ',';
 }
 
 static int st_is_moving(const char* line) {
@@ -314,14 +330,23 @@ static int st_is_idle_attached(const char* line) {
     return st_is_idle(line) && field_equals(line, "ATT=", "3F");
 }
 
+// 六个关节角必须**每个都是完整的十进制整数**才算数。
+// strtol 对 "oops" 返回 0、对 "90x" 返回 90 却都不报错——只要还给 got 计数，
+// 一行被误码污染的 POS 配上合法的 ST=IDLE;ATT=3F，就足以让 boot 验证把
+// position_known 置真，此后基于污染坐标放行运动。
 int arm_fsm_parse_pos(const char* line, int out_joints[6]) {
     if (!arm_fsm_has_prefix(line, "POS:")) return 0;
     int got = 0;
     for (int i = 0; i < 6; ++i) {
         char key[3] = {(char)('A' + i), '=', '\0'};
-        const char* p = strstr(line, key);
+        const char* p = find_field(line, key);
         if (!p) continue;
-        out_joints[i] = (int)strtol(p + 2, NULL, 10);
+        p += 2;
+        char* end = NULL;
+        long v = strtol(p, &end, 10);
+        if (end == p) continue;                 // 一个数字都没吃到
+        if (*end != ',' && *end != ';' && *end != '\0') continue;  // 数字后面还有尾巴
+        out_joints[i] = (int)v;
         ++got;
     }
     return got == 6;
@@ -373,9 +398,9 @@ static void render_cmd(const ArmRequest* r, char* out, size_t n) {
         case ARM_REQ_GRIP_CLOSE: snprintf(out, n, "GRIP_CLOSE"); break;
         case ARM_REQ_JOINT:
             if (r->ramp_ms > 0) {
-                snprintf(out, n, "JOINT:%c:%d:%d", r->joint, r->angle, r->ramp_ms);
+                snprintf(out, n, "JOINT:%s:%d:%d", r->joint, r->angle, r->ramp_ms);
             } else {
-                snprintf(out, n, "JOINT:%c:%d", r->joint, r->angle);
+                snprintf(out, n, "JOINT:%s:%d", r->joint, r->angle);
             }
             break;
         case ARM_REQ_MOVE_PRESET: snprintf(out, n, "MOVE_PRESET:%s", r->name); break;
