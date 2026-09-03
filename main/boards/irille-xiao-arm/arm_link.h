@@ -45,12 +45,21 @@ class ArmLink {
     void RxOwnerLoop();
 
     // 执行决策器的输出。持锁调用。
-    void Execute(const ArmDecision& d);
+    void Execute(ArmDecision d);
+
+    // 把一行喂给决策器并执行其决策。**两条喂行路径的唯一入口**——世代取样的纪律
+    // 只在这里体现一次，免得两处各写一套（曾经就漂过：一处传接收时刻快照、
+    // 一处传处理时刻的当前值，而后者等于让认领条件恒真）。持锁调用。
+    void FeedLine(const char* line, uint32_t rx_generation);
 
     // 排空串口缓冲里已到达的行并回喂决策器。清场用，持锁调用。
-    void DrainPending();
+    // rx_generation 由调用方在排空**之前**取样——这些行都是在那之前到达的。
+    void DrainPending(uint32_t rx_generation);
 
-    // 从 UART 读一整行（到 '\n' 为止）。返回行长，超时返回 0。
+    // 交付一个回复给正在等待的工具调用。持锁调用。
+    void PostReply(const ArmReply& r);
+
+    // 从 UART 读一整行（到 '\n' 为止）。返回行长，超时返回 0，超长行返回 -1。
     int ReadLine(char* out, int cap, int timeout_ms);
 
     ArmFsm            fsm_;

@@ -27,53 +27,40 @@ constexpr const char* kPollSuffix =
     "self.arm.status until that operation reaches a terminal state before issuing the "
     "next motion.";
 
-inline const char* CodeName(ArmCode c) {
-    switch (c) {
-        case ARM_CODE_LIMIT: return "LIMIT";
-        case ARM_CODE_COLLISION: return "COLLISION";
-        case ARM_CODE_BUSY: return "BUSY";
-        case ARM_CODE_ESTOP: return "ESTOP";
-        case ARM_CODE_RELAXED: return "RELAXED";
-        case ARM_CODE_UNKNOWN_PRESET: return "UNKNOWN_PRESET";
-        case ARM_CODE_INVALID_COMMAND: return "INVALID_COMMAND";
-        case ARM_CODE_TIMEOUT: return "TIMEOUT";
-        case ARM_CODE_LINK: return "LINK";
-        case ARM_CODE_RESET: return "RESET";
-        case ARM_CODE_ACCEPTANCE_UNKNOWN: return "ACCEPTANCE_UNKNOWN";
-        default: return "";
+// `max_ms` 可为 null（受理是推断出来的、拿不到耗时时如实报 null，不按角度反推——
+// 那等于在 board 层做角度计算）。先备好这个片段，省得每处都复制整条格式串。
+inline void RenderMaxMs(char* out, size_t n, int32_t max_ms) {
+    if (max_ms >= 0) {
+        std::snprintf(out, n, "%d", (int)max_ms);
+    } else {
+        std::snprintf(out, n, "null");
     }
 }
 
 // 成功与失败同构：agent 只需一套解析逻辑。
+// 缓冲按可证明的上界取（%d 按 -2147483648、code 按最长的 ACCEPTANCE_UNKNOWN、
+// recovery 按最长那条 135 字符算）——这些帧跑在 8KB 的主任务栈上。
 inline std::string ReplyToJson(const ArmReply& r) {
-    char buf[512];
+    char buf[208];
     if (r.ok) {
         // 急停不创建 operation，载荷形态与动作类不同（contracts/mcp-tools.md）
         if (r.kind == ARM_REPLY_STOPPED) {
             return std::string("{\"ok\":true,\"state\":\"stopped\"}");
         }
-        if (r.max_ms >= 0) {
-            std::snprintf(buf, sizeof buf,
-                          "{\"ok\":true,\"state\":\"accepted\",\"operation_id\":%u,"
-                          "\"max_ms\":%d}",
-                          (unsigned)r.operation_id, (int)r.max_ms);
-        } else {
-            // 受理是推断出来的（即时应答丢失），拿不到耗时就如实报 null，
-            // 不按角度反推——那等于在 board 层做角度计算。
-            std::snprintf(buf, sizeof buf,
-                          "{\"ok\":true,\"state\":\"accepted\",\"operation_id\":%u,"
-                          "\"max_ms\":null}",
-                          (unsigned)r.operation_id);
-        }
+        char ms[16];
+        RenderMaxMs(ms, sizeof ms, r.max_ms);
+        std::snprintf(buf, sizeof buf,
+                      "{\"ok\":true,\"state\":\"accepted\",\"operation_id\":%u,\"max_ms\":%s}",
+                      (unsigned)r.operation_id, ms);
     } else {
         std::snprintf(buf, sizeof buf, "{\"ok\":false,\"code\":\"%s\",\"recovery\":\"%s\"}",
-                      CodeName(r.code), arm_fsm_recovery_text(r.code));
+                      arm_fsm_code_name(r.code), arm_fsm_recovery_text(r.code));
     }
     return std::string(buf);
 }
 
 inline std::string StatusToJson(const ArmStatusSnapshot& s) {
-    char joints[160] = "null";
+    char joints[104] = "null";
     if (s.has_pos) {
         std::snprintf(joints, sizeof joints,
                       "{\"A\":%d,\"B\":%d,\"C\":%d,\"D\":%d,\"E\":%d,\"F\":%d}",
@@ -81,32 +68,24 @@ inline std::string StatusToJson(const ArmStatusSnapshot& s) {
                       s.joints[3], s.joints[4], s.joints[5]);
     }
 
-    char op[512];
+    char ms[16];
+    RenderMaxMs(ms, sizeof ms, s.op_max_ms);
+
+    // 失败终态与同步拒绝同构地带上 code + recovery：只报 state 不足以让 agent
+    // 决定下一步。
+    char op[272];
     if (s.op_code != ARM_CODE_NONE) {
-        // 失败终态与同步拒绝同构地带上 code + recovery：只报 state 不足以让
-        // agent 决定下一步。
-        if (s.op_max_ms >= 0) {
-            std::snprintf(op, sizeof op,
-                          "{\"id\":%u,\"state\":\"%s\",\"max_ms\":%d,\"code\":\"%s\","
-                          "\"recovery\":\"%s\"}",
-                          (unsigned)s.op_id, s.op_state, (int)s.op_max_ms,
-                          CodeName(s.op_code), arm_fsm_recovery_text(s.op_code));
-        } else {
-            std::snprintf(op, sizeof op,
-                          "{\"id\":%u,\"state\":\"%s\",\"max_ms\":null,\"code\":\"%s\","
-                          "\"recovery\":\"%s\"}",
-                          (unsigned)s.op_id, s.op_state,
-                          CodeName(s.op_code), arm_fsm_recovery_text(s.op_code));
-        }
-    } else if (s.op_max_ms >= 0) {
-        std::snprintf(op, sizeof op, "{\"id\":%u,\"state\":\"%s\",\"max_ms\":%d}",
-                      (unsigned)s.op_id, s.op_state, (int)s.op_max_ms);
+        std::snprintf(op, sizeof op,
+                      "{\"id\":%u,\"state\":\"%s\",\"max_ms\":%s,\"code\":\"%s\","
+                      "\"recovery\":\"%s\"}",
+                      (unsigned)s.op_id, s.op_state, ms,
+                      arm_fsm_code_name(s.op_code), arm_fsm_recovery_text(s.op_code));
     } else {
-        std::snprintf(op, sizeof op, "{\"id\":%u,\"state\":\"%s\",\"max_ms\":null}",
-                      (unsigned)s.op_id, s.op_state);
+        std::snprintf(op, sizeof op, "{\"id\":%u,\"state\":\"%s\",\"max_ms\":%s}",
+                      (unsigned)s.op_id, s.op_state, ms);
     }
 
-    char buf[1024];
+    char buf[512];
     std::snprintf(buf, sizeof buf,
                   "{\"ok\":true,\"position_known\":%s,\"operation\":%s,\"joints\":%s,"
                   "\"arm_state\":\"%s\",\"controller_version\":\"%d.%d\","
@@ -143,41 +122,81 @@ inline int RampMsOf(const std::string& speed) {
     return -1;
 }
 
+// 无参工具与"只带一个预设名"的工具各自同构，只差 name / description / ArmReqKind。
+// 展开成九份独立的 AddTool 调用会把 Register() 撑到 2.4 KB .text，外加九组 lambda
+// 的 RTTI、std::function 实例化与异常表——而这是只在开机跑一次的代码。
+struct NoArgTool {
+    const char* name;
+    const char* desc;
+    ArmReqKind  kind;
+    bool        poll;   // 动作类要带轮询提示；stop 不是动作，不带
+};
+
+struct NamedTool {
+    const char* name;
+    const char* desc;
+    ArmReqKind  kind;
+};
+
 inline void Register(ArmLink& link) {
     auto& mcp = McpServer::GetInstance();
 
-    mcp.AddTool("self.arm.home",
-                std::string(
-                    "Move the arm back to its home pose. This is also the only way to "
-                    "recover after the arm controller has reset or gone limp: it "
-                    "re-establishes a known position.") + kPollSuffix,
-                PropertyList(),
-                [&link](const PropertyList&) -> ReturnValue {
-                    return ReplyToJsonOrThrow(link.Request(MakeReq(ARM_REQ_HOME)));
-                });
+    static const NoArgTool kNoArgTools[] = {
+        {"self.arm.home",
+         "Move the arm back to its home pose. This is also the only way to recover after "
+         "the arm controller has reset or gone limp: it re-establishes a known position.",
+         ARM_REQ_HOME, true},
+        {"self.arm.stop",
+         "Cancel whatever the arm is doing right now. Closed-loop motions stop where they "
+         "are. This is a functional cancel, not a safety guarantee: a homing move is "
+         "open-loop and will finish travelling even after this returns, and the only true "
+         "emergency stop is cutting the arm's 12 V supply.",
+         ARM_REQ_STOP, false},
+        {"self.arm.gripper_open", "Open the gripper.", ARM_REQ_GRIP_OPEN, true},
+        {"self.arm.gripper_close", "Close the gripper.", ARM_REQ_GRIP_CLOSE, true},
+    };
+    for (const auto& t : kNoArgTools) {
+        ArmReqKind k = t.kind;
+        mcp.AddTool(t.name,
+                    t.poll ? std::string(t.desc) + kPollSuffix : std::string(t.desc),
+                    PropertyList(),
+                    [&link, k](const PropertyList&) -> ReturnValue {
+                        return ReplyToJsonOrThrow(link.Request(MakeReq(k)));
+                    });
+    }
 
-    mcp.AddTool("self.arm.stop",
-                "Cancel whatever the arm is doing right now. Closed-loop motions stop "
-                "where they are. This is a functional cancel, not a safety guarantee: a "
-                "homing move is open-loop and will finish travelling even after this "
-                "returns, and the only true emergency stop is cutting the arm's 12 V supply.",
-                PropertyList(),
-                [&link](const PropertyList&) -> ReturnValue {
-                    return ReplyToJsonOrThrow(link.Request(MakeReq(ARM_REQ_STOP)));
-                });
+    static const NamedTool kNamedTools[] = {
+        {"self.arm.move_to_preset",
+         "Move the arm to a named preset pose. The gripper is not part of a preset - use "
+         "the gripper tools for that.",
+         ARM_REQ_MOVE_PRESET},
+        {"self.arm.pick_from_preset",
+         "Pick an object from a named preset location: approach from above, open the "
+         "gripper, descend, close, and lift back up. The whole sequence is one motion. If "
+         "the result comes back as ACCEPTANCE_UNKNOWN, do NOT call this again - check "
+         "self.arm.status first, because repeating it would reopen the gripper and drop "
+         "whatever is held.",
+         ARM_REQ_PICK},
+        {"self.arm.place_to_preset",
+         "Place the held object at a named preset location: approach from above, descend, "
+         "open the gripper, and lift back up. The whole sequence is one motion. If the "
+         "result comes back as ACCEPTANCE_UNKNOWN, do NOT call this again - check "
+         "self.arm.status first.",
+         ARM_REQ_PLACE},
+    };
+    for (const auto& t : kNamedTools) {
+        ArmReqKind k = t.kind;
+        mcp.AddTool(t.name, std::string(t.desc) + kPollSuffix,
+                    PropertyList({Property("name", kPropertyTypeString)}),
+                    [&link, k](const PropertyList& p) -> ReturnValue {
+                        ArmRequest r = MakeReq(k);
+                        std::snprintf(r.name, sizeof r.name, "%s",
+                                      p["name"].value<std::string>().c_str());
+                        return ReplyToJsonOrThrow(link.Request(r));
+                    });
+    }
 
-    mcp.AddTool("self.arm.gripper_open",
-                std::string("Open the gripper.") + kPollSuffix, PropertyList(),
-                [&link](const PropertyList&) -> ReturnValue {
-                    return ReplyToJsonOrThrow(link.Request(MakeReq(ARM_REQ_GRIP_OPEN)));
-                });
-
-    mcp.AddTool("self.arm.gripper_close",
-                std::string("Close the gripper.") + kPollSuffix, PropertyList(),
-                [&link](const PropertyList&) -> ReturnValue {
-                    return ReplyToJsonOrThrow(link.Request(MakeReq(ARM_REQ_GRIP_CLOSE)));
-                });
-
+    // 下面两个形态各不相同，保持独立。
     mcp.AddTool("self.arm.move_joint",
                 std::string(
                     "Turn a single joint to an absolute angle. Joints are named A to F from "
@@ -195,47 +214,6 @@ inline void Register(ArmLink& link) {
                     r.joint = j.empty() ? '?' : j[0];
                     r.angle = p["angle"].value<int>();
                     r.ramp_ms = RampMsOf(p["speed"].value<std::string>());
-                    return ReplyToJsonOrThrow(link.Request(r));
-                });
-
-    mcp.AddTool("self.arm.move_to_preset",
-                std::string(
-                    "Move the arm to a named preset pose. The gripper is not part of a "
-                    "preset - use the gripper tools for that.") + kPollSuffix,
-                PropertyList({Property("name", kPropertyTypeString)}),
-                [&link](const PropertyList& p) -> ReturnValue {
-                    ArmRequest r = MakeReq(ARM_REQ_MOVE_PRESET);
-                    std::snprintf(r.name, sizeof r.name, "%s",
-                                  p["name"].value<std::string>().c_str());
-                    return ReplyToJsonOrThrow(link.Request(r));
-                });
-
-    mcp.AddTool("self.arm.pick_from_preset",
-                std::string(
-                    "Pick an object from a named preset location: approach from above, open "
-                    "the gripper, descend, close, and lift back up. The whole sequence is one "
-                    "motion. If the result comes back as ACCEPTANCE_UNKNOWN, do NOT call this "
-                    "again - check self.arm.status first, because repeating it would reopen "
-                    "the gripper and drop whatever is held.") + kPollSuffix,
-                PropertyList({Property("name", kPropertyTypeString)}),
-                [&link](const PropertyList& p) -> ReturnValue {
-                    ArmRequest r = MakeReq(ARM_REQ_PICK);
-                    std::snprintf(r.name, sizeof r.name, "%s",
-                                  p["name"].value<std::string>().c_str());
-                    return ReplyToJsonOrThrow(link.Request(r));
-                });
-
-    mcp.AddTool("self.arm.place_to_preset",
-                std::string(
-                    "Place the held object at a named preset location: approach from above, "
-                    "descend, open the gripper, and lift back up. The whole sequence is one "
-                    "motion. If the result comes back as ACCEPTANCE_UNKNOWN, do NOT call this "
-                    "again - check self.arm.status first.") + kPollSuffix,
-                PropertyList({Property("name", kPropertyTypeString)}),
-                [&link](const PropertyList& p) -> ReturnValue {
-                    ArmRequest r = MakeReq(ARM_REQ_PLACE);
-                    std::snprintf(r.name, sizeof r.name, "%s",
-                                  p["name"].value<std::string>().c_str());
                     return ReplyToJsonOrThrow(link.Request(r));
                 });
 

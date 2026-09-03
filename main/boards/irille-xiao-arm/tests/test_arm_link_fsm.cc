@@ -102,6 +102,46 @@ static void TestClassify() {
     CHECK(arm_fsm_classify("") == ARM_LINE_MALFORMED);
     CHECK(arm_fsm_classify("OK") == ARM_LINE_MALFORMED);   // 残缺
     CHECK(arm_fsm_classify("garbage") == ARM_LINE_MALFORMED);
+
+    // 带载荷的行必须真的带载荷：裸前缀是误码帧，不得混成合法应答。
+    // "ERROR:" 若被放行会一路走到 error_code_of 落进 INVALID_COMMAND——
+    // 一个残帧就变成了一次业务拒绝。
+    CHECK(arm_fsm_classify("ERROR:") == ARM_LINE_MALFORMED);
+    CHECK(arm_fsm_classify("PONG:") == ARM_LINE_MALFORMED);
+    CHECK(arm_fsm_classify("POS:") == ARM_LINE_MALFORMED);
+    CHECK(arm_fsm_classify("ST=") == ARM_LINE_MALFORMED);
+    CHECK(arm_fsm_classify("READY:") == ARM_LINE_MALFORMED);
+    CHECK(arm_fsm_classify("DONE:CONTACT") == ARM_LINE_MALFORMED);  // 未实现的变体
+}
+
+// 动作超时 ⇒ 下位机已锁存急停并 detach ⇒ 位置不再可信。
+// 这条路径原先漏了降级：board 侧继续报 position_known，下一条动作照发。
+static void TestTimeoutForfeitsPosition() {
+    ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
+    uint32_t now = 1000;
+    BringUpReady(&f, &now);
+
+    ArmRequest r = JointReq('A', 95);
+    arm_fsm_on_request(&f, &r, now);
+    now += 30;
+    OnLine(&f, "OK:2000", now);
+    CHECK(f.position_known == 1);
+
+    now += 500;
+    OnLine(&f, "ERROR:TIMEOUT", now);
+    CHECK(f.op_state == ARM_OP_TIMED_OUT);
+    CHECK(f.op_code == ARM_CODE_TIMEOUT);
+    CHECK(f.position_known == 0);                      // ★ 必须降级
+    CHECK(f.phase == ARM_PHASE_LOCKED_AFTER_RESET);    // ★ 必须落锁
+
+    // 此后普通运动被挡，只放行 home
+    ArmRequest j = JointReq('B', 70);
+    ArmDecision d = arm_fsm_on_request(&f, &j, now);
+    CHECK(d.action == ARM_ACT_REPLY);
+    CHECK(d.reply.ok == 0);
+    ArmRequest home = SimpleReq(ARM_REQ_HOME);
+    d = arm_fsm_on_request(&f, &home, now);
+    CHECK(d.action == ARM_ACT_SEND);
 }
 
 // ------------------------------------------------------------------ 正常受理与终态
@@ -987,7 +1027,14 @@ static void TestRecoveryTextComplete() {
         const char* t = arm_fsm_recovery_text(c);
         CHECK(t != nullptr);
         CHECK(t[0] != '\0');
+        // code 名与 recovery 是同一枚举上的两张平行表，一起断言才不会只补一半：
+        // 漏一个分支时 agent 拿到的是空错误码，而空字符串不会让别处失败。
+        const char* n = arm_fsm_code_name(c);
+        CHECK(n != nullptr);
+        CHECK(n[0] != '\0');
     }
+    CHECK(std::strcmp(arm_fsm_code_name(ARM_CODE_BAD_ARGUMENT), "BAD_ARGUMENT") == 0);
+    CHECK(std::strcmp(arm_fsm_code_name(ARM_CODE_TIMEOUT), "TIMEOUT") == 0);
 }
 
 // 命令行拼装
@@ -1021,6 +1068,7 @@ static void TestCommandRendering() {
 
 int main() {
     TestClassify();
+    TestTimeoutForfeitsPosition();
     TestAcceptAndDone();
     TestTerminalBeforeAckDiscarded();
     TestStaleTerminalAcrossGeneration();

@@ -37,11 +37,14 @@ ArmLineKind arm_fsm_classify(const char* line) {
     // 严格相等，不用前缀：截断出来的 "DONE..." 之类不得被当成完成。
     if (strcmp(line, "DONE") == 0) return ARM_LINE_DONE;
     if (strcmp(line, "BUSY") == 0) return ARM_LINE_BUSY;
-    if (arm_fsm_has_prefix(line, "ERROR:")) return ARM_LINE_ERROR;
-    if (arm_fsm_has_prefix(line, "PONG:")) return ARM_LINE_PONG;
-    if (arm_fsm_has_prefix(line, "POS:")) return ARM_LINE_POS;
-    if (arm_fsm_has_prefix(line, "ST=")) return ARM_LINE_ST;
-    if (arm_fsm_has_prefix(line, "READY:")) return ARM_LINE_READY;
+    // 带载荷的行必须**真的带载荷**（治具 link_fsm.c 的判据，理由同样是"误码帧不得
+    // 混成合法应答"）。裸前缀放行的后果很具体：截断出来的 "ERROR:" 会一路走到
+    // error_code_of 落进 INVALID_COMMAND，一个误码帧就变成了一次业务拒绝。
+    if (arm_fsm_has_prefix(line, "ERROR:")) return line[6] ? ARM_LINE_ERROR : ARM_LINE_MALFORMED;
+    if (arm_fsm_has_prefix(line, "PONG:")) return line[5] ? ARM_LINE_PONG : ARM_LINE_MALFORMED;
+    if (arm_fsm_has_prefix(line, "POS:")) return line[4] ? ARM_LINE_POS : ARM_LINE_MALFORMED;
+    if (arm_fsm_has_prefix(line, "ST=")) return line[3] ? ARM_LINE_ST : ARM_LINE_MALFORMED;
+    if (arm_fsm_has_prefix(line, "READY:")) return line[6] ? ARM_LINE_READY : ARM_LINE_MALFORMED;
     return ARM_LINE_MALFORMED;
 }
 
@@ -91,6 +94,27 @@ const char* arm_fsm_recovery_text(ArmCode code) {
                    "self.arm.status before retrying - do not repeat a pick or place blindly.";
         default:
             return "";
+    }
+}
+
+// 与 recovery_text 是同一个枚举上的两张平行表，放一起才不会只补一半——
+// recovery 那半有逐码断言拦着，code 名这半原先在工具层、零覆盖，漏一个分支
+// agent 拿到的就是空错误码。
+const char* arm_fsm_code_name(ArmCode code) {
+    switch (code) {
+        case ARM_CODE_LIMIT: return "LIMIT";
+        case ARM_CODE_COLLISION: return "COLLISION";
+        case ARM_CODE_BUSY: return "BUSY";
+        case ARM_CODE_ESTOP: return "ESTOP";
+        case ARM_CODE_RELAXED: return "RELAXED";
+        case ARM_CODE_UNKNOWN_PRESET: return "UNKNOWN_PRESET";
+        case ARM_CODE_INVALID_COMMAND: return "INVALID_COMMAND";
+        case ARM_CODE_BAD_ARGUMENT: return "BAD_ARGUMENT";
+        case ARM_CODE_TIMEOUT: return "TIMEOUT";
+        case ARM_CODE_LINK: return "LINK";
+        case ARM_CODE_RESET: return "RESET";
+        case ARM_CODE_ACCEPTANCE_UNKNOWN: return "ACCEPTANCE_UNKNOWN";
+        default: return "";
     }
 }
 
@@ -197,12 +221,34 @@ static int can_claim_terminal(const ArmFsm* f) {
            f->rx_generation == f->op_generation;
 }
 
-static void degrade_after_failed_home(ArmFsm* f) {
-    f->position_known = 0;
-    f->phase = ARM_PHASE_LOCKED_AFTER_RESET;
+// 位置不再可信时的唯一落锁点。曾经这两行被手抄在六处，其中两处顺序还是反的——
+// 有一处更是干脆漏了（TIMED_OUT），于是下位机已锁存急停、board 侧却还报位置可信。
+void lock_position_lost(ArmFsm* f) { f->position_known = 0; f->phase = ARM_PHASE_LOCKED_AFTER_RESET; }
+
+// 信任降级是**终态的属性**，不是各调用点的动作。收在表里，漏一处在结构上就不可能。
+//   RESET              下位机复位，位置全丢
+//   TIMED_OUT          下位机锁存急停并 detach（recovery 文案自己写着要 home）
+//   ACCEPTANCE_UNKNOWN 不知道动作有没有发生，也就不知道臂在哪
+// DONE / STOPPED / REJECTED 不在其中：闭环动作停在当前角，下位机仍知道自己在哪。
+// LINK_FAILED 也不在——清场确认空闲后位置由 POS 回报兜住；清场**没**确认空闲的那条
+// 路径在调用点额外落锁（那里才是真的不确定）。
+static int terminal_forfeits_position(ArmOpState st) {
+    return st == ARM_OP_RESET || st == ARM_OP_TIMED_OUT ||
+           st == ARM_OP_ACCEPTANCE_UNKNOWN;
 }
 
-// 操作的唯一收口。归位的任何非成功终态都在这里统一降级——下位机在归位被中断时
+// 「受理成功、转入等终态」的唯一入口。三处调用只差期限算法：拿到 OK:<max_ms>
+// 时用实测耗时 + grace，由 BUSY / ST=MOVING 推断出来时 max_ms 未知、用保守兜底。
+static ArmDecision accept_op(ArmFsm* f, int32_t max_ms, uint32_t deadline_ms) {
+    f->op_accepted = 1;
+    f->op_max_ms = max_ms;
+    f->op_deadline_ms = deadline_ms;
+    f->op_state = ARM_OP_MOVING;
+    f->arm_moving = 1;
+    return reply_ok_(ARM_REPLY_ACCEPTED, f->op_id, max_ms);
+}
+
+// 操作的唯一收口。归位的任何非成功终态也在这里统一降级——下位机在归位被中断时
 // detach（protocol.cpp 的 motion_abort_clear），此后位置不再可信；常态归位与恢复
 // 归位一视同仁，少走一条路径就会留下 phase 卡在 RECOVERING_HOME 的死角。
 static void finish_op(ArmFsm* f, ArmOpState st, ArmCode code) {
@@ -212,13 +258,14 @@ static void finish_op(ArmFsm* f, ArmOpState st, ArmCode code) {
     f->probe_outstanding = 0;
     f->arm_moving = 0;          // 动作已收口，状态快照要跟上
     f->operation_generation++;  // 作废一切在途事件
-    if (was_home) {
-        if (st == ARM_OP_DONE) {
-            if (f->phase == ARM_PHASE_RECOVERING_HOME) f->phase = ARM_PHASE_READY;
-            f->position_known = 1;
-        } else {
-            degrade_after_failed_home(f);
-        }
+
+    if (was_home && st == ARM_OP_DONE) {
+        if (f->phase == ARM_PHASE_RECOVERING_HOME) f->phase = ARM_PHASE_READY;
+        f->position_known = 1;
+        return;
+    }
+    if (terminal_forfeits_position(st) || was_home) {
+        lock_position_lost(f);
     }
 }
 
@@ -502,8 +549,7 @@ ArmDecision arm_fsm_on_line(ArmFsm* f, const char* line, uint32_t rx_generation,
                 f->phase = ARM_PHASE_READY;
                 f->position_known = 1;
             } else {
-                f->phase = ARM_PHASE_LOCKED_AFTER_RESET;
-                f->position_known = 0;
+                lock_position_lost(f);
             }
         }
         return none_();
@@ -523,23 +569,13 @@ ArmDecision arm_fsm_on_line(ArmFsm* f, const char* line, uint32_t rx_generation,
         switch (kind) {
             case ARM_LINE_OK_MAXMS: {
                 long ms = strtol(line + 3, NULL, 10);
-                f->op_accepted = 1;
-                f->op_max_ms = (int32_t)ms;
-                f->op_deadline_ms = now_ms + (uint32_t)ms + f->done_grace_ms;
-                f->op_state = ARM_OP_MOVING;
-                f->arm_moving = 1;
-                return reply_ok_(ARM_REPLY_ACCEPTED, f->op_id, f->op_max_ms);
+                return accept_op(f, (int32_t)ms, now_ms + (uint32_t)ms + f->done_grace_ms);
             }
             case ARM_LINE_BUSY:
                 if (f->op_attempts > 1) {
                     // 重发后的 BUSY = 首条其实已被受理（协议 §4.3.3）。拿不到 max_ms，
                     // 如实报未知并改用保守兜底期限——不按角度反推耗时。
-                    f->op_accepted = 1;
-                    f->op_max_ms = -1;
-                    f->op_deadline_ms = now_ms + f->fallback_deadline_ms;
-                    f->op_state = ARM_OP_MOVING;
-                    f->arm_moving = 1;
-                    return reply_ok_(ARM_REPLY_ACCEPTED, f->op_id, -1);
+                    return accept_op(f, -1, now_ms + f->fallback_deadline_ms);
                 }
                 finish_op(f, ARM_OP_REJECTED, ARM_CODE_BUSY);
                 return reply_err_(ARM_CODE_BUSY);
@@ -557,19 +593,13 @@ ArmDecision arm_fsm_on_line(ArmFsm* f, const char* line, uint32_t rx_generation,
                 if (f->probe_outstanding) {
                     f->probe_outstanding = 0;
                     if (st_is_moving(line)) {
-                        f->op_accepted = 1;
-                        f->op_max_ms = -1;
-                        f->op_deadline_ms = now_ms + f->fallback_deadline_ms;
-                        f->op_state = ARM_OP_MOVING;
-                        f->arm_moving = 1;
-                        return reply_ok_(ARM_REPLY_ACCEPTED, f->op_id, -1);
+                        return accept_op(f, -1, now_ms + f->fallback_deadline_ms);
                     }
                     // IDLE **不能**判「未受理」：非幂等动作可能已整条走完只是应答全丢，
                     // 判未受理会诱导 agent 重发、再开一次爪、掉落物件。
                     // 且此刻既不知道动作有没有发生，也就不知道臂在哪 ⇒ fail-closed。
                     finish_op(f, ARM_OP_ACCEPTANCE_UNKNOWN, ARM_CODE_ACCEPTANCE_UNKNOWN);
-                    f->position_known = 0;
-                    f->phase = ARM_PHASE_LOCKED_AFTER_RESET;
+                    lock_position_lost(f);
                     return reply_err_(ARM_CODE_ACCEPTANCE_UNKNOWN);
                 }
                 return none_();
@@ -606,8 +636,7 @@ ArmDecision arm_fsm_on_line(ArmFsm* f, const char* line, uint32_t rx_generation,
                 // ESTOP / RELAXED / 畸形：fail-closed。下位机可能仍锁存急停，
                 // 位置不再可信，不当作干净的空闲收场。
                 finish_op(f, ARM_OP_LINK_FAILED, ARM_CODE_LINK);
-                f->position_known = 0;
-                f->phase = ARM_PHASE_LOCKED_AFTER_RESET;
+                lock_position_lost(f);
                 return none_();
             }
             // 确认空闲，才递增世代并释放操作槽
@@ -627,8 +656,7 @@ ArmDecision arm_fsm_on_tick(ArmFsm* f, uint32_t now_ms) {
     // 没有完整的 READY → DONE 证据链就不得认定位置已知。
     if ((f->phase == ARM_PHASE_WAIT_BOOT_DONE || f->phase == ARM_PHASE_VERIFY_BOOT_HOME) &&
         f->boot_window_armed && elapsed_past(now_ms, f->boot_window_start_ms, f->boot_window_ms)) {
-        f->phase = ARM_PHASE_LOCKED_AFTER_RESET;
-        f->position_known = 0;
+        lock_position_lost(f);
         f->boot_window_armed = 0;
         return none_();
     }
@@ -657,8 +685,7 @@ ArmDecision arm_fsm_on_tick(ArmFsm* f, uint32_t now_ms) {
             // 探查也没回音：既不知道动作有没有发生，也就不知道臂在哪。
             // 不得在未确认空闲的情况下回到可运动状态（FR-021a）——fail-closed 落锁。
             finish_op(f, ARM_OP_ACCEPTANCE_UNKNOWN, ARM_CODE_ACCEPTANCE_UNKNOWN);
-            f->position_known = 0;
-            f->phase = ARM_PHASE_LOCKED_AFTER_RESET;
+            lock_position_lost(f);
             return reply_err_(ARM_CODE_ACCEPTANCE_UNKNOWN);
         }
         if (f->op_attempts < f->max_attempts) {
@@ -701,8 +728,7 @@ ArmDecision arm_fsm_on_tick(ArmFsm* f, uint32_t now_ms) {
     if (f->op_state == ARM_OP_QUIESCING && f->quiesce_probe_sent &&
         deadline_passed(now_ms, f->op_deadline_ms)) {
         finish_op(f, ARM_OP_LINK_FAILED, ARM_CODE_LINK);
-        f->position_known = 0;
-        f->phase = ARM_PHASE_LOCKED_AFTER_RESET;
+        lock_position_lost(f);
         return none_();
     }
 

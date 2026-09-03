@@ -55,8 +55,11 @@
 // 急停：不等重试间隔，立即连发三行；下位机发送期间关中断会丢起始位，三连把最坏
 // 延迟从约 300ms 压到一个字节时间。
 #define ARM_STOP_REPEAT       3
-#define ARM_STOP_GAP_MS       5
 #define ARM_STOP_ACK_WAIT_MS  200   // 至少收到一个 OK:STOPPED 才可报告已停止
+// 注：三帧一次性写进 TX 环形缓冲即连续出线，不设帧间延时。曾经有过一个
+// ARM_STOP_GAP_MS=5，但 FREERTOS_HZ=100 下 pdMS_TO_TICKS(5) 算出来是 0 tick，
+// 那个"间隔"在运行时从不存在；就算取到 1 tick 也没用——一帧 5.2ms 的发送时间
+// 远长于入队间隔，线上仍是连续字节。要真造出线上间隔得先 uart_wait_tx_done()。
 
 #define ARM_LINE_MAX 64   // 上行最长行 POS:... 为 51B，留余量
 

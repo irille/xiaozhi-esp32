@@ -13,9 +13,11 @@
 
 namespace {
 
-// 工具调用的总等待上界。即时应答最坏 = ack_timeout × MAX_ATTEMPTS ≈ 900ms，
-// 急停 ACK 窗口 200ms；给到 3s 是纯兜底，正常路径远早于此返回。
-constexpr int kRequestTimeoutMs = 3000;
+// 工具调用的总等待上界，**由 config.h 推导而不是冻成字面量**：它是决策器那几个
+// 超时的函数，改大 ACK 超时或重试次数时必须跟着走，否则这条兜底会从"永不触发的
+// 保险"变成主路径，所有请求都误报 LINK。
+constexpr int kRequestTimeoutMs =
+    ARM_ACK_TIMEOUT_MS * ARM_MAX_ATTEMPTS + ARM_STOP_ACK_WAIT_MS + 1000;
 constexpr int kRxPollMs = 100;
 // 排空的循环上限：只为防止串口持续来数据时卡住本轮，不是业务约束。
 constexpr int kDrainMaxLines = 16;
@@ -124,7 +126,7 @@ void ArmLink::RxOwnerLoop() {
         xSemaphoreTake(mutex_, portMAX_DELAY);
         if (n > 0) {
             ESP_LOGD(TAG, "rx: %s", line);
-            Execute(arm_fsm_on_line(&fsm_, line, rx_gen, NowMs()));
+            FeedLine(line, rx_gen);
         }
         // 每轮都推一次时钟：重发、期限核对、上电窗口超时都靠它。
         Execute(arm_fsm_on_tick(&fsm_, NowMs()));
@@ -132,10 +134,19 @@ void ArmLink::RxOwnerLoop() {
     }
 }
 
+void ArmLink::FeedLine(const char* line, uint32_t rx_generation) {
+    Execute(arm_fsm_on_line(&fsm_, line, rx_generation, NowMs()));
+}
+
+void ArmLink::PostReply(const ArmReply& r) {
+    pending_reply_ = r;
+    xSemaphoreGive(reply_sem_);
+}
+
 // 把已经躺在串口缓冲里的行全部读完并回喂。清场用：旧操作的终态就在里面，
 // 必须在 STATUS 回复之前被消费掉，否则它会在清场之后才冒出来、被下一个操作冒领。
 // 持锁调用，非阻塞读。
-void ArmLink::DrainPending() {
+void ArmLink::DrainPending(uint32_t rx_generation) {
     char line[ARM_FSM_LINE_MAX];
     for (int guard = 0; guard < kDrainMaxLines; ++guard) {
         // 先看缓冲里到底有没有数据。ReadLine 的超时是**整行**的期限，传 0 会在
@@ -148,35 +159,24 @@ void ArmLink::DrainPending() {
         if (n == 0) break;      // 有字节但凑不成整行：剩下的留给 RX owner
         if (n < 0) continue;    // 超长行已整行丢弃，继续排
         ESP_LOGD(TAG, "drain: %s", line);
-        ArmDecision d = arm_fsm_on_line(&fsm_, line, fsm_.operation_generation, NowMs());
-        if (d.action == ARM_ACT_REPLY) {
-            pending_reply_ = d.reply;
-            xSemaphoreGive(reply_sem_);
-        }
+        FeedLine(line, rx_generation);
     }
 }
 
-void ArmLink::Execute(const ArmDecision& d) {
+void ArmLink::Execute(ArmDecision d) {
+    if (d.action == ARM_ACT_DRAIN_AND_SEND) {
+        // 这些行都是在排空开始**之前**到达的，用那一刻的世代取样。
+        uint32_t rx_gen = fsm_.operation_generation;
+        DrainPending(rx_gen);
+        // 排空可能已经改变了状态（收到 READY 或那条终态）——**不能**继续执行排空前
+        // 的旧决策，否则可能在 WAIT_BOOT_DONE 下发出 STATUS、破坏零下行。重新问一次。
+        d = arm_fsm_on_tick(&fsm_, NowMs());
+        // "只排空一次"是决策器的策略（quiesce_probe_sent 在保证），这里只做防御，
+        // 不让 IO 层递归。
+        if (d.action == ARM_ACT_DRAIN_AND_SEND) d.action = ARM_ACT_SEND;
+    }
+
     switch (d.action) {
-        case ARM_ACT_DRAIN_AND_SEND: {
-            DrainPending();
-            // 排空可能已经改变了状态（收到 READY 或那条终态）——**不能**继续执行
-            // 排空前的旧决策，否则可能在 WAIT_BOOT_DONE 下发出 STATUS，破坏零下行。
-            // 重新问一次决策器。
-            ArmDecision again = arm_fsm_on_tick(&fsm_, NowMs());
-            if (again.action == ARM_ACT_REPLY) {
-                pending_reply_ = again.reply;
-                xSemaphoreGive(reply_sem_);
-            } else if (again.action == ARM_ACT_SEND ||
-                       again.action == ARM_ACT_DRAIN_AND_SEND) {
-                // 已经排空过了，这里只发送，不再递归排空
-                char buf[ARM_FSM_LINE_MAX + 2];
-                int n = std::snprintf(buf, sizeof buf, "%s\n", again.line);
-                uart_write_bytes(ARM_UART_PORT, buf, n);
-                ESP_LOGD(TAG, "tx(after drain): %s", again.line);
-            }
-            break;
-        }
         case ARM_ACT_SEND: {
             char buf[ARM_FSM_LINE_MAX + 2];
             int n = std::snprintf(buf, sizeof buf, "%s\n", d.line);
@@ -184,21 +184,25 @@ void ArmLink::Execute(const ArmDecision& d) {
             ESP_LOGD(TAG, "tx: %s", d.line);
             break;
         }
-        case ARM_ACT_SEND_STOP:
+        case ARM_ACT_SEND_STOP: {
             // 三连发：下位机发送期间关中断会丢起始位，连发把最坏延迟从约 300ms
             // 压到一个字节时间。下位机对 STOP 幂等。
+            // 一次写入即可：TX 环形缓冲 256B，而 9600 8N1 下一帧 "STOP\n" 要 5.2ms
+            // ——三帧在第一帧排空前就已入队，线上本来就是连续 15 字节。原先那个
+            // vTaskDelay(5ms) 在 FREERTOS_HZ=100 下算出来是 0 tick，不产生任何间隔，
+            // 只是在持锁状态下白做两次调度切换，而 RX owner 正等着这把锁去收 ACK。
+            char burst[5 * ARM_STOP_REPEAT];
             for (int i = 0; i < ARM_STOP_REPEAT; ++i) {
-                uart_write_bytes(ARM_UART_PORT, "STOP\n", 5);
-                if (i + 1 < ARM_STOP_REPEAT) {
-                    vTaskDelay(pdMS_TO_TICKS(ARM_STOP_GAP_MS));
-                }
+                std::memcpy(burst + i * 5, "STOP\n", 5);
             }
+            uart_write_bytes(ARM_UART_PORT, burst, sizeof burst);
             ESP_LOGI(TAG, "tx: STOP x%d", ARM_STOP_REPEAT);
             break;
+        }
         case ARM_ACT_REPLY:
-            pending_reply_ = d.reply;
-            xSemaphoreGive(reply_sem_);
+            PostReply(d.reply);
             break;
+        case ARM_ACT_DRAIN_AND_SEND:  // 上面已降级，不会走到
         case ARM_ACT_NONE:
         default:
             break;
