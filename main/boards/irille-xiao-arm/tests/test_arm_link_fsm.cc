@@ -450,6 +450,136 @@ static void TestQuiesceNonIdleFailsClosed() {
     }
 }
 
+// 没见过 READY 就收到 DONE：不得当作 boot 归位（证据链不完整）
+static void TestDoneWithoutReadyStaysLocked() {
+    ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
+    uint32_t now = 1000;
+    CHECK(f.phase == ARM_PHASE_WAIT_BOOT_DONE);
+    CHECK(f.ready_seen == 0);
+
+    ArmDecision d = OnLine(&f, "DONE", now);   // 孤儿 DONE，不是 boot 归位
+    CHECK(d.action == ARM_ACT_NONE);
+    CHECK(f.phase == ARM_PHASE_WAIT_BOOT_DONE);   // 没进验证
+    CHECK(f.position_known == 0);
+
+    arm_fsm_on_tick(&f, now + 4001);
+    CHECK(f.phase == ARM_PHASE_LOCKED_AFTER_RESET);
+    CHECK(f.position_known == 0);
+}
+
+// ST / ATT 必须整字段比对：子串匹配会让 "ST=IDLE_BOGUS" fail-open
+static void TestStrictStatusFields() {
+    // boot 验证：欺骗性子串不得解锁
+    ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
+    uint32_t now = 1000;
+    OnLine(&f, "READY:1.0:04", now);
+    now += 100;
+    OnLine(&f, "DONE", now);
+    CHECK(f.phase == ARM_PHASE_VERIFY_BOOT_HOME);
+    now += 20;
+    OnLine(&f, "POS:A=90;ST=IDLE_BOGUS;ATT=3F", now);
+    CHECK(f.phase == ARM_PHASE_LOCKED_AFTER_RESET);   // 不认
+    CHECK(f.position_known == 0);
+
+    // ATT 同理
+    ArmFsm g; arm_fsm_init(&g, &c);
+    uint32_t t = 1000;
+    OnLine(&g, "READY:1.0:04", t);
+    t += 100;
+    OnLine(&g, "DONE", t);
+    t += 20;
+    OnLine(&g, "POS:A=90;ST=IDLE;ATT=3F0", t);
+    CHECK(g.phase == ARM_PHASE_LOCKED_AFTER_RESET);
+}
+
+// 动作受理等待中收到 READY：等待者必须**立刻**拿到 RESET，
+// 不能拖到 IO 层的兜底超时——那会突破主循环占用上界（宪法 III.2）
+static void TestReadyWakesWaiters() {
+    ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
+    uint32_t now = 1000;
+    BringUpReady(&f, &now);
+
+    ArmRequest r = JointReq('A', 95);
+    arm_fsm_on_request(&f, &r, now);
+    CHECK(f.op_state == ARM_OP_PENDING_ACCEPTANCE);
+    now += 20;
+    ArmDecision d = OnLine(&f, "READY:1.0:02", now);
+    CHECK(d.action == ARM_ACT_REPLY);
+    CHECK(d.reply.ok == 0);
+    CHECK(d.reply.code == ARM_CODE_RESET);
+
+    // 急停等待中同理
+    ArmFsm g; arm_fsm_init(&g, &c);
+    uint32_t t = 1000;
+    BringUpReady(&g, &t);
+    ArmRequest s = SimpleReq(ARM_REQ_STOP);
+    arm_fsm_on_request(&g, &s, t);
+    CHECK(g.stop_pending == 1);
+    t += 20;
+    d = OnLine(&g, "READY:1.0:02", t);
+    CHECK(d.action == ARM_ACT_REPLY);
+    CHECK(d.reply.code == ARM_CODE_RESET);
+}
+
+// 非幂等探查也没回音 ⇒ fail-closed 落锁，不得回到可运动状态（FR-021a）
+static void TestNonIdempotentProbeSilenceFailsClosed() {
+    ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
+    uint32_t now = 1000;
+    BringUpReady(&f, &now);
+
+    ArmRequest r = NamedReq(ARM_REQ_PICK, "READY");
+    arm_fsm_on_request(&f, &r, now);
+    now += 301;
+    arm_fsm_on_tick(&f, now);          // 发 STATUS 探查
+    now += 301;
+    ArmDecision d = arm_fsm_on_tick(&f, now);   // 探查也没回音
+    CHECK(d.action == ARM_ACT_REPLY);
+    CHECK(d.reply.code == ARM_CODE_ACCEPTANCE_UNKNOWN);
+    CHECK(f.position_known == 0);
+    CHECK(f.phase == ARM_PHASE_LOCKED_AFTER_RESET);
+
+    // 此后普通运动被挡，只放行 home
+    ArmRequest j = JointReq('A', 95);
+    d = arm_fsm_on_request(&f, &j, now);
+    CHECK(d.action == ARM_ACT_REPLY);
+    CHECK(d.reply.ok == 0);
+}
+
+// arm_moving 与操作生命周期一致：受理后为真，终态后为假
+static void TestArmMovingTracksOperation() {
+    ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
+    uint32_t now = 1000;
+    BringUpReady(&f, &now);
+    CHECK(f.arm_moving == 0);
+
+    ArmRequest r = JointReq('A', 95);
+    arm_fsm_on_request(&f, &r, now);
+    now += 30;
+    OnLine(&f, "OK:2000", now);
+    CHECK(f.arm_moving == 1);          // 受理即在动
+
+    now += 2000;
+    OnLine(&f, "DONE", now);
+    CHECK(f.arm_moving == 0);          // 终态后不再报在动
+}
+
+// 非法 speed 由决策器的白名单拒掉（工具层把未知档翻成 -1）
+static void TestInvalidSpeedRejected() {
+    ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
+    uint32_t now = 1000;
+    BringUpReady(&f, &now);
+
+    ArmRequest r = JointReq('A', 95);
+    r.ramp_ms = -1;                    // 工具层对未知档返回 -1
+    ArmDecision d = arm_fsm_on_request(&f, &r, now);
+    CHECK(d.action == ARM_ACT_REPLY);
+    CHECK(d.reply.code == ARM_CODE_BAD_ARGUMENT);
+
+    r.ramp_ms = 200;                   // 超出协议允许的 [FAST, 100]
+    d = arm_fsm_on_request(&f, &r, now);
+    CHECK(d.reply.code == ARM_CODE_BAD_ARGUMENT);
+}
+
 // 本地互斥：动作在途时第二条动作立即 BUSY，不下发
 static void TestLocalBusy() {
     ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
@@ -902,6 +1032,12 @@ int main() {
     TestNonIdempotentProbeMovingIsAccepted();
     TestImmediateRejections();
     TestArgumentWhitelist();
+    TestDoneWithoutReadyStaysLocked();
+    TestStrictStatusFields();
+    TestReadyWakesWaiters();
+    TestNonIdempotentProbeSilenceFailsClosed();
+    TestArmMovingTracksOperation();
+    TestInvalidSpeedRejected();
     TestAllTerminalsBeforeAckDiscarded();
     TestQuiesceNonIdleFailsClosed();
     TestLocalBusy();

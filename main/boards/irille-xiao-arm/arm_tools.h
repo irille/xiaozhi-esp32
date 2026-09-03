@@ -134,10 +134,13 @@ inline ArmRequest MakeReq(ArmReqKind k) {
 
 // 速度档 → 每度毫秒。三档由下位机 config.h 定死（FAST=10 / NORMAL=20 / FINE=50，
 // 2026-08-31 实测），这里只做名字到数值的翻译，不做任何安全判断。
+// 契约限定 fast|normal|fine —— **未知值返回 -1**，由决策器的白名单拒掉，
+// 不静默当成 normal（那会让打错字的 agent 以为自己选了细档）。
 inline int RampMsOf(const std::string& speed) {
     if (speed == "fast") return 10;
+    if (speed == "normal") return 20;
     if (speed == "fine") return 50;
-    return 20;  // normal 及未知值
+    return -1;
 }
 
 inline void Register(ArmLink& link) {

@@ -210,6 +210,7 @@ static void finish_op(ArmFsm* f, ArmOpState st, ArmCode code) {
     f->op_state = st;
     f->op_code = code;
     f->probe_outstanding = 0;
+    f->arm_moving = 0;          // 动作已收口，状态快照要跟上
     f->operation_generation++;  // 作废一切在途事件
     if (was_home) {
         if (st == ARM_OP_DONE) {
@@ -238,18 +239,30 @@ static void parse_version(ArmFsm* f, const char* p) {
     }
 }
 
+// 取 `key=` 字段的值并与 want 整体比较。**不能用 strstr**：那样 `ST=IDLE_BOGUS`
+// 会被当成 IDLE，清场与 boot 验证双双 fail-open。字段以 ';' 分隔或行尾结束。
+static int field_equals(const char* line, const char* key, const char* want) {
+    const char* p = strstr(line, key);
+    if (!p) return 0;
+    p += strlen(key);
+    size_t n = strlen(want);
+    if (strncmp(p, want, n) != 0) return 0;
+    char after = p[n];
+    return after == '\0' || after == ';';
+}
+
 static int st_is_moving(const char* line) {
-    return strstr(line, "ST=MOVING") != NULL;
+    return field_equals(line, "ST=", "MOVING");
 }
 
 // 严格只认 IDLE。ST=ESTOP / ST=RELAXED / 畸形行都**不算**空闲——把它们当空闲会
 // 在下位机仍锁存急停时释放操作槽。
 static int st_is_idle(const char* line) {
-    return strstr(line, "ST=IDLE") != NULL;
+    return field_equals(line, "ST=", "IDLE");
 }
 
 static int st_is_idle_attached(const char* line) {
-    return st_is_idle(line) && strstr(line, "ATT=3F") != NULL;
+    return st_is_idle(line) && field_equals(line, "ATT=", "3F");
 }
 
 int arm_fsm_parse_pos(const char* line, int out_joints[6]) {
@@ -431,14 +444,20 @@ ArmDecision arm_fsm_on_line(ArmFsm* f, const char* line, uint32_t rx_generation,
     if (kind == ARM_LINE_READY) {
         parse_version(f, line + 6);
         f->link_epoch++;
+        // 谁在等，谁就立刻拿到 RESET。拖到 IO 层的兜底超时才回复会突破主循环
+        // 占用上界（宪法 III.2）——那条上界正是靠"决策器总在上界内给出答复"成立的。
+        int waiter_op = (f->op_state == ARM_OP_PENDING_ACCEPTANCE);
+        int waiter_stop = f->stop_pending;
+        int waiter_query = f->status_query_outstanding;
         if (op_active(f)) {
             finish_op(f, ARM_OP_RESET, ARM_CODE_RESET);
         }
         f->stop_pending = 0;
-        int had_query = f->status_query_outstanding;
+        f->status_query_outstanding = 0;
         enter_wait_boot(f, now_ms);
-        if (had_query) {
-            return fail_status_query(f, ARM_CODE_RESET);  // 等待者必须拿到答复
+        f->ready_seen = 1;
+        if (waiter_op || waiter_stop || waiter_query) {
+            return reply_err_(ARM_CODE_RESET);
         }
         return none_();
     }
@@ -468,7 +487,9 @@ ArmDecision arm_fsm_on_line(ArmFsm* f, const char* line, uint32_t rx_generation,
 
     // ---- 上电归位确认 ----
     if (f->phase == ARM_PHASE_WAIT_BOOT_DONE) {
-        if (kind == ARM_LINE_DONE) {
+        // 必须先见过本纪元的 READY：没有完整的 READY → DONE 证据链，这条 DONE
+        // 可能是 board 启动前那条动作的孤儿，把它当 boot 归位就是 fail-open。
+        if (kind == ARM_LINE_DONE && f->ready_seen) {
             f->phase = ARM_PHASE_VERIFY_BOOT_HOME;
             return send_("STATUS");
         }
@@ -506,6 +527,7 @@ ArmDecision arm_fsm_on_line(ArmFsm* f, const char* line, uint32_t rx_generation,
                 f->op_max_ms = (int32_t)ms;
                 f->op_deadline_ms = now_ms + (uint32_t)ms + f->done_grace_ms;
                 f->op_state = ARM_OP_MOVING;
+                f->arm_moving = 1;
                 return reply_ok_(ARM_REPLY_ACCEPTED, f->op_id, f->op_max_ms);
             }
             case ARM_LINE_BUSY:
@@ -516,6 +538,7 @@ ArmDecision arm_fsm_on_line(ArmFsm* f, const char* line, uint32_t rx_generation,
                     f->op_max_ms = -1;
                     f->op_deadline_ms = now_ms + f->fallback_deadline_ms;
                     f->op_state = ARM_OP_MOVING;
+                    f->arm_moving = 1;
                     return reply_ok_(ARM_REPLY_ACCEPTED, f->op_id, -1);
                 }
                 finish_op(f, ARM_OP_REJECTED, ARM_CODE_BUSY);
@@ -538,11 +561,15 @@ ArmDecision arm_fsm_on_line(ArmFsm* f, const char* line, uint32_t rx_generation,
                         f->op_max_ms = -1;
                         f->op_deadline_ms = now_ms + f->fallback_deadline_ms;
                         f->op_state = ARM_OP_MOVING;
+                        f->arm_moving = 1;
                         return reply_ok_(ARM_REPLY_ACCEPTED, f->op_id, -1);
                     }
                     // IDLE **不能**判「未受理」：非幂等动作可能已整条走完只是应答全丢，
                     // 判未受理会诱导 agent 重发、再开一次爪、掉落物件。
+                    // 且此刻既不知道动作有没有发生，也就不知道臂在哪 ⇒ fail-closed。
                     finish_op(f, ARM_OP_ACCEPTANCE_UNKNOWN, ARM_CODE_ACCEPTANCE_UNKNOWN);
+                    f->position_known = 0;
+                    f->phase = ARM_PHASE_LOCKED_AFTER_RESET;
                     return reply_err_(ARM_CODE_ACCEPTANCE_UNKNOWN);
                 }
                 return none_();
@@ -627,7 +654,11 @@ ArmDecision arm_fsm_on_tick(ArmFsm* f, uint32_t now_ms) {
                 f->op_sent_at_ms = now_ms;
                 return send_("STATUS");
             }
+            // 探查也没回音：既不知道动作有没有发生，也就不知道臂在哪。
+            // 不得在未确认空闲的情况下回到可运动状态（FR-021a）——fail-closed 落锁。
             finish_op(f, ARM_OP_ACCEPTANCE_UNKNOWN, ARM_CODE_ACCEPTANCE_UNKNOWN);
+            f->position_known = 0;
+            f->phase = ARM_PHASE_LOCKED_AFTER_RESET;
             return reply_err_(ARM_CODE_ACCEPTANCE_UNKNOWN);
         }
         if (f->op_attempts < f->max_attempts) {

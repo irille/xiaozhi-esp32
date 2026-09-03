@@ -19,6 +19,8 @@ constexpr int kRequestTimeoutMs = 3000;
 constexpr int kRxPollMs = 100;
 // 排空的循环上限：只为防止串口持续来数据时卡住本轮，不是业务约束。
 constexpr int kDrainMaxLines = 16;
+// 排空时单行的读取期限。9600 8N1 下一行最长约 55 ms（51 字节），给 80 ms 有余。
+constexpr int kDrainLineTimeoutMs = 80;
 
 uint32_t NowMs() {
     return static_cast<uint32_t>(esp_timer_get_time() / 1000);
@@ -136,11 +138,17 @@ void ArmLink::RxOwnerLoop() {
 void ArmLink::DrainPending() {
     char line[ARM_FSM_LINE_MAX];
     for (int guard = 0; guard < kDrainMaxLines; ++guard) {
-        int n = ReadLine(line, sizeof line, 0);
-        if (n <= 0) break;   // 0 = 没有更多；-1 = 超长行已丢弃，继续下一轮
+        // 先看缓冲里到底有没有数据。ReadLine 的超时是**整行**的期限，传 0 会在
+        // 读第一个字节之前就到期返回——那样一行也排不掉，等于没排。
+        size_t avail = 0;
+        if (uart_get_buffered_data_len(ARM_UART_PORT, &avail) != ESP_OK || avail == 0) {
+            break;
+        }
+        int n = ReadLine(line, sizeof line, kDrainLineTimeoutMs);
+        if (n == 0) break;      // 有字节但凑不成整行：剩下的留给 RX owner
+        if (n < 0) continue;    // 超长行已整行丢弃，继续排
         ESP_LOGD(TAG, "drain: %s", line);
         ArmDecision d = arm_fsm_on_line(&fsm_, line, fsm_.operation_generation, NowMs());
-        // 排空期间产生的回复照常交付；不再递归发送（决策器不会在此路径要求发送）。
         if (d.action == ARM_ACT_REPLY) {
             pending_reply_ = d.reply;
             xSemaphoreGive(reply_sem_);
@@ -150,9 +158,25 @@ void ArmLink::DrainPending() {
 
 void ArmLink::Execute(const ArmDecision& d) {
     switch (d.action) {
-        case ARM_ACT_DRAIN_AND_SEND:
+        case ARM_ACT_DRAIN_AND_SEND: {
             DrainPending();
-            [[fallthrough]];
+            // 排空可能已经改变了状态（收到 READY 或那条终态）——**不能**继续执行
+            // 排空前的旧决策，否则可能在 WAIT_BOOT_DONE 下发出 STATUS，破坏零下行。
+            // 重新问一次决策器。
+            ArmDecision again = arm_fsm_on_tick(&fsm_, NowMs());
+            if (again.action == ARM_ACT_REPLY) {
+                pending_reply_ = again.reply;
+                xSemaphoreGive(reply_sem_);
+            } else if (again.action == ARM_ACT_SEND ||
+                       again.action == ARM_ACT_DRAIN_AND_SEND) {
+                // 已经排空过了，这里只发送，不再递归排空
+                char buf[ARM_FSM_LINE_MAX + 2];
+                int n = std::snprintf(buf, sizeof buf, "%s\n", again.line);
+                uart_write_bytes(ARM_UART_PORT, buf, n);
+                ESP_LOGD(TAG, "tx(after drain): %s", again.line);
+            }
+            break;
+        }
         case ARM_ACT_SEND: {
             char buf[ARM_FSM_LINE_MAX + 2];
             int n = std::snprintf(buf, sizeof buf, "%s\n", d.line);
