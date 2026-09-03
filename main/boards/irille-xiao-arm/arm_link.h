@@ -47,6 +47,9 @@ class ArmLink {
     // 执行决策器的输出。持锁调用。
     void Execute(const ArmDecision& d);
 
+    // 排空串口缓冲里已到达的行并回喂决策器。清场用，持锁调用。
+    void DrainPending();
+
     // 从 UART 读一整行（到 '\n' 为止）。返回行长，超时返回 0。
     int ReadLine(char* out, int cap, int timeout_ms);
 

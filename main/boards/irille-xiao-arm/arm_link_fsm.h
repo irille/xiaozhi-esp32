@@ -55,6 +55,9 @@ typedef enum {
     ARM_CODE_LINK,
     ARM_CODE_RESET,
     ARM_CODE_ACCEPTANCE_UNKNOWN,
+    // 本地参数白名单校验失败（不是下位机拒绝）。调用方应把它当编程错误报，
+    // 而不是当成一次正常的业务拒绝。
+    ARM_CODE_BAD_ARGUMENT,
 } ArmCode;
 
 // ---------------------------------------------------------------- 操作状态
@@ -104,17 +107,27 @@ typedef struct {
 
 // ---------------------------------------------------------------- 决策
 typedef enum {
-    ARM_ACT_NONE = 0,   // 什么也不做
-    ARM_ACT_SEND,       // 发送 line 一行
-    ARM_ACT_SEND_STOP,  // 连发三行 STOP（间隔由 IO 层按 config.h 掌握）
-    ARM_ACT_REPLY,      // 工具调用可以返回了
+    ARM_ACT_NONE = 0,       // 什么也不做
+    ARM_ACT_SEND,           // 发送 line 一行
+    ARM_ACT_DRAIN_AND_SEND, // 先把已到达的行**全部读完并回喂**，再发 line。
+                            // 清场用：确保旧终态在 STATUS 回复之前被消费掉。
+    ARM_ACT_SEND_STOP,      // 连发三行 STOP（间隔由 IO 层按 config.h 掌握）
+    ARM_ACT_REPLY,          // 工具调用可以返回了
 } ArmActionKind;
 
+// 成功回复的形态。STOP 与动作类不同构：它不创建 operation。
+typedef enum {
+    ARM_REPLY_ACCEPTED = 0,  // 动作已受理
+    ARM_REPLY_STOPPED,       // 急停已确认
+    ARM_REPLY_STATUS,        // 状态查询的回复
+} ArmReplyKind;
+
 typedef struct {
-    int      ok;            // 1 = 成功/受理，0 = 失败/拒绝
-    ArmCode  code;          // ok==0 时的原因
-    uint32_t operation_id;  // 受理时的操作编号
-    int32_t  max_ms;        // 受理时的预计耗时；-1 表示未知（推断受理）
+    int          ok;            // 1 = 成功/受理，0 = 失败/拒绝
+    ArmReplyKind kind;          // ok==1 时的形态
+    ArmCode      code;          // ok==0 时的原因
+    uint32_t     operation_id;  // 受理时的操作编号
+    int32_t      max_ms;        // 受理时的预计耗时；-1 表示未知（推断受理）
 } ArmReply;
 
 typedef struct {
@@ -145,14 +158,10 @@ typedef struct {
     char       op_line[ARM_FSM_LINE_MAX];
     ArmCode    op_code;           // 终态若是失败类，这里是原因
 
-    // RX 事件的世代快照：由 on_line 在入口处记录，用于甄别迟到应答
+    // 本次处理的这一行在**接收时刻**的世代快照（由 IO 层在开始等这一行之前取样、
+    // 随行传入）。用它参与认领判定，才能识破"旧操作已放弃、新操作已就位"时才
+    // 到达的迟到终态——用处理时刻的当前值取样等于恒真，那道条件形同虚设。
     uint32_t rx_generation;
-
-    // 孤儿终态额度。当一个操作以不确定方式结束、而下位机已报 IDLE 时，说明它的终态
-    // 要么已丢、要么仍在串口缓冲里——记一张额度，下一条终态用掉它并被丢弃。
-    // 光比对世代号挡不住这种情形：新操作创建后世代已推进，迟到的行在"处理时刻"
-    // 取到的快照与新操作相同，从时间上区分不开。对端复位时同理记一张。
-    int stale_terminal_credit;
 
     // boot 归位确认
     uint32_t boot_window_start_ms;
@@ -165,6 +174,19 @@ typedef struct {
 
     // 探查（非幂等受理探查 / deadline 核对 / 清场 fence）——每处至多一次
     int      probe_outstanding;
+
+    // agent 主动发起的状态查询正在等回复。与 probe_outstanding 分开：那个是
+    // 决策器自己发的探查，这个背后有一个工具调用在等 REPLY，复位或超时都必须
+    // 给它一个明确答复，否则调用方会干等到上层超时并误报链路故障。
+    int      status_query_outstanding;
+    uint32_t status_query_sent_at_ms;
+
+    // 清场只发一次 STATUS（协议 §4.4：动作期间的状态回复会拖慢斜坡节拍）
+    int      quiesce_probe_sent;
+
+    // 版本探测只补发一次。错过 READY（board 启动晚于下位机）时靠它，
+    // 否则 controller_version 会永远停在 0.0。
+    int      version_probe_sent;
 
     // 下位机版本
     int      fw_major;
@@ -197,9 +219,18 @@ typedef struct {
 void arm_fsm_init(ArmFsm* fsm, const ArmFsmConfig* cfg);
 
 // 三个入口，各返回一个决策。
+//
+// `rx_generation` 是 IO 层在**开始等这一行之前**取的世代快照，随行传入；
+// 详见结构体里同名字段的说明。
 ArmDecision arm_fsm_on_request(ArmFsm* fsm, const ArmRequest* req, uint32_t now_ms);
-ArmDecision arm_fsm_on_line(ArmFsm* fsm, const char* line, uint32_t now_ms);
+ArmDecision arm_fsm_on_line(ArmFsm* fsm, const char* line, uint32_t rx_generation,
+                            uint32_t now_ms);
 ArmDecision arm_fsm_on_tick(ArmFsm* fsm, uint32_t now_ms);
+
+// 参数白名单校验（供测试直接调用）：名字 [A-Z0-9_]{1,14}、关节 A-F。
+// **不做转义**——不合规直接拒绝，免得把换行拼进命令行、注入第二条指令。
+int arm_fsm_name_is_valid(const char* name);
+int arm_fsm_joint_is_valid(char joint);
 
 // 供测试与状态查询共用的纯函数
 ArmLineKind arm_fsm_classify(const char* line);

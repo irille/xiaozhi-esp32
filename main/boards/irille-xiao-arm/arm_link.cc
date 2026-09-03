@@ -17,6 +17,8 @@ namespace {
 // 急停 ACK 窗口 200ms；给到 3s 是纯兜底，正常路径远早于此返回。
 constexpr int kRequestTimeoutMs = 3000;
 constexpr int kRxPollMs = 100;
+// 排空的循环上限：只为防止串口持续来数据时卡住本轮，不是业务约束。
+constexpr int kDrainMaxLines = 16;
 
 uint32_t NowMs() {
     return static_cast<uint32_t>(esp_timer_get_time() / 1000);
@@ -76,8 +78,11 @@ void ArmLink::RxOwnerTrampoline(void* arg) {
     static_cast<ArmLink*>(arg)->RxOwnerLoop();
 }
 
+// 返回行长；超时返回 0；**超长行返回 -1（整行丢弃）**。
+// 截断后再交给决策器是危险的：一条被截成 "DONE" 的长行会被认成动作完成。
 int ArmLink::ReadLine(char* out, int cap, int timeout_ms) {
     int len = 0;
+    bool overflow = false;
     TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(timeout_ms);
     for (;;) {
         uint8_t ch = 0;
@@ -85,14 +90,19 @@ int ArmLink::ReadLine(char* out, int cap, int timeout_ms) {
         if ((int32_t)left <= 0) return 0;
         if (uart_read_bytes(ARM_UART_PORT, &ch, 1, left) != 1) return 0;
         if (ch == '\n') {
+            if (overflow) {
+                ESP_LOGW(TAG, "rx: oversized line dropped");
+                return -1;
+            }
             out[len] = '\0';
             return len;
         }
         if (ch == '\r') continue;
         if (len < cap - 1) {
             out[len++] = (char)ch;
+        } else {
+            overflow = true;  // 继续吞到换行为止，但整行作废
         }
-        // 超长行：继续吞到换行为止，交给决策器判 malformed
     }
 }
 
@@ -101,12 +111,18 @@ int ArmLink::ReadLine(char* out, int cap, int timeout_ms) {
 void ArmLink::RxOwnerLoop() {
     char line[ARM_FSM_LINE_MAX];
     for (;;) {
+        // **接收时刻**的世代快照：在开始等这一行之前取样。用处理时刻的当前值
+        // 取样等于恒真，终态认领的第五条就形同虚设——迟到的旧终态会被新操作冒领。
+        xSemaphoreTake(mutex_, portMAX_DELAY);
+        uint32_t rx_gen = fsm_.operation_generation;
+        xSemaphoreGive(mutex_);
+
         int n = ReadLine(line, sizeof line, kRxPollMs);
 
         xSemaphoreTake(mutex_, portMAX_DELAY);
         if (n > 0) {
             ESP_LOGD(TAG, "rx: %s", line);
-            Execute(arm_fsm_on_line(&fsm_, line, NowMs()));
+            Execute(arm_fsm_on_line(&fsm_, line, rx_gen, NowMs()));
         }
         // 每轮都推一次时钟：重发、期限核对、上电窗口超时都靠它。
         Execute(arm_fsm_on_tick(&fsm_, NowMs()));
@@ -114,8 +130,29 @@ void ArmLink::RxOwnerLoop() {
     }
 }
 
+// 把已经躺在串口缓冲里的行全部读完并回喂。清场用：旧操作的终态就在里面，
+// 必须在 STATUS 回复之前被消费掉，否则它会在清场之后才冒出来、被下一个操作冒领。
+// 持锁调用，非阻塞读。
+void ArmLink::DrainPending() {
+    char line[ARM_FSM_LINE_MAX];
+    for (int guard = 0; guard < kDrainMaxLines; ++guard) {
+        int n = ReadLine(line, sizeof line, 0);
+        if (n <= 0) break;   // 0 = 没有更多；-1 = 超长行已丢弃，继续下一轮
+        ESP_LOGD(TAG, "drain: %s", line);
+        ArmDecision d = arm_fsm_on_line(&fsm_, line, fsm_.operation_generation, NowMs());
+        // 排空期间产生的回复照常交付；不再递归发送（决策器不会在此路径要求发送）。
+        if (d.action == ARM_ACT_REPLY) {
+            pending_reply_ = d.reply;
+            xSemaphoreGive(reply_sem_);
+        }
+    }
+}
+
 void ArmLink::Execute(const ArmDecision& d) {
     switch (d.action) {
+        case ARM_ACT_DRAIN_AND_SEND:
+            DrainPending();
+            [[fallthrough]];
         case ARM_ACT_SEND: {
             char buf[ARM_FSM_LINE_MAX + 2];
             int n = std::snprintf(buf, sizeof buf, "%s\n", d.line);

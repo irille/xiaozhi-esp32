@@ -12,6 +12,7 @@
 // ⚠️ 上游 AddTool 按名去重且无法重注册 —— description 里不得烤进运行时可变的
 //    数值（关节限位、速度档毫秒数），否则改了要重启才刷新。
 
+#include <stdexcept>
 #include <string>
 
 #include "arm_link.h"
@@ -47,6 +48,10 @@ inline const char* CodeName(ArmCode c) {
 inline std::string ReplyToJson(const ArmReply& r) {
     char buf[512];
     if (r.ok) {
+        // 急停不创建 operation，载荷形态与动作类不同（contracts/mcp-tools.md）
+        if (r.kind == ARM_REPLY_STOPPED) {
+            return std::string("{\"ok\":true,\"state\":\"stopped\"}");
+        }
         if (r.max_ms >= 0) {
             std::snprintf(buf, sizeof buf,
                           "{\"ok\":true,\"state\":\"accepted\",\"operation_id\":%u,"
@@ -112,6 +117,15 @@ inline std::string StatusToJson(const ArmStatusSnapshot& s) {
     return std::string(buf);
 }
 
+// 本地参数白名单失败是**调用方的编程错误**，不是一次业务拒绝——按 contracts
+// 的约定走 JSON-RPC error，而不是混进正常返回里让 agent 去分辨。
+inline std::string ReplyToJsonOrThrow(const ArmReply& r) {
+    if (!r.ok && r.code == ARM_CODE_BAD_ARGUMENT) {
+        throw std::runtime_error(arm_fsm_recovery_text(r.code));
+    }
+    return ReplyToJson(r);
+}
+
 inline ArmRequest MakeReq(ArmReqKind k) {
     ArmRequest r = {};
     r.kind = k;
@@ -136,7 +150,7 @@ inline void Register(ArmLink& link) {
                     "re-establishes a known position.") + kPollSuffix,
                 PropertyList(),
                 [&link](const PropertyList&) -> ReturnValue {
-                    return ReplyToJson(link.Request(MakeReq(ARM_REQ_HOME)));
+                    return ReplyToJsonOrThrow(link.Request(MakeReq(ARM_REQ_HOME)));
                 });
 
     mcp.AddTool("self.arm.stop",
@@ -146,19 +160,19 @@ inline void Register(ArmLink& link) {
                 "returns, and the only true emergency stop is cutting the arm's 12 V supply.",
                 PropertyList(),
                 [&link](const PropertyList&) -> ReturnValue {
-                    return ReplyToJson(link.Request(MakeReq(ARM_REQ_STOP)));
+                    return ReplyToJsonOrThrow(link.Request(MakeReq(ARM_REQ_STOP)));
                 });
 
     mcp.AddTool("self.arm.gripper_open",
                 std::string("Open the gripper.") + kPollSuffix, PropertyList(),
                 [&link](const PropertyList&) -> ReturnValue {
-                    return ReplyToJson(link.Request(MakeReq(ARM_REQ_GRIP_OPEN)));
+                    return ReplyToJsonOrThrow(link.Request(MakeReq(ARM_REQ_GRIP_OPEN)));
                 });
 
     mcp.AddTool("self.arm.gripper_close",
                 std::string("Close the gripper.") + kPollSuffix, PropertyList(),
                 [&link](const PropertyList&) -> ReturnValue {
-                    return ReplyToJson(link.Request(MakeReq(ARM_REQ_GRIP_CLOSE)));
+                    return ReplyToJsonOrThrow(link.Request(MakeReq(ARM_REQ_GRIP_CLOSE)));
                 });
 
     mcp.AddTool("self.arm.move_joint",
@@ -178,7 +192,7 @@ inline void Register(ArmLink& link) {
                     r.joint = j.empty() ? '?' : j[0];
                     r.angle = p["angle"].value<int>();
                     r.ramp_ms = RampMsOf(p["speed"].value<std::string>());
-                    return ReplyToJson(link.Request(r));
+                    return ReplyToJsonOrThrow(link.Request(r));
                 });
 
     mcp.AddTool("self.arm.move_to_preset",
@@ -190,7 +204,7 @@ inline void Register(ArmLink& link) {
                     ArmRequest r = MakeReq(ARM_REQ_MOVE_PRESET);
                     std::snprintf(r.name, sizeof r.name, "%s",
                                   p["name"].value<std::string>().c_str());
-                    return ReplyToJson(link.Request(r));
+                    return ReplyToJsonOrThrow(link.Request(r));
                 });
 
     mcp.AddTool("self.arm.pick_from_preset",
@@ -205,7 +219,7 @@ inline void Register(ArmLink& link) {
                     ArmRequest r = MakeReq(ARM_REQ_PICK);
                     std::snprintf(r.name, sizeof r.name, "%s",
                                   p["name"].value<std::string>().c_str());
-                    return ReplyToJson(link.Request(r));
+                    return ReplyToJsonOrThrow(link.Request(r));
                 });
 
     mcp.AddTool("self.arm.place_to_preset",
@@ -219,7 +233,7 @@ inline void Register(ArmLink& link) {
                     ArmRequest r = MakeReq(ARM_REQ_PLACE);
                     std::snprintf(r.name, sizeof r.name, "%s",
                                   p["name"].value<std::string>().c_str());
-                    return ReplyToJson(link.Request(r));
+                    return ReplyToJsonOrThrow(link.Request(r));
                 });
 
     mcp.AddTool("self.arm.status",
@@ -232,7 +246,12 @@ inline void Register(ArmLink& link) {
                 [&link](const PropertyList&) -> ReturnValue {
                     // 是否需要打串口由决策器裁定；这里无条件走 Request，
                     // 它在已知 moving 时会直接返回缓存。
-                    link.Request(MakeReq(ARM_REQ_STATUS));
+                    ArmReply r = link.Request(MakeReq(ARM_REQ_STATUS));
+                    if (!r.ok) {
+                        // 查询本身失败（链路断、对端复位）就如实报——
+                        // 拿旧快照冒充成功，等于向 agent 谎报机械臂的状态。
+                        return ReplyToJsonOrThrow(r);
+                    }
                     ArmStatusSnapshot s = {};
                     link.Snapshot(&s);
                     return StatusToJson(s);

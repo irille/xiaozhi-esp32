@@ -36,18 +36,27 @@ static ArmFsmConfig TestCfg() {
     return c;
 }
 
+// 收到即处理时，接收时刻的世代 == 当前世代。需要模拟"迟到的行"时用 OnLineGen
+// 显式传入更早的世代快照。
+static ArmDecision OnLine(ArmFsm* f, const char* line, uint32_t now) {
+    return arm_fsm_on_line(f, line, f->operation_generation, now);
+}
+static ArmDecision OnLineGen(ArmFsm* f, const char* line, uint32_t gen, uint32_t now) {
+    return arm_fsm_on_line(f, line, gen, now);
+}
+
 // 把 fsm 推到「就绪、位置已知」——多数用例的起点。
 static void BringUpReady(ArmFsm* f, uint32_t* now) {
-    ArmDecision d = arm_fsm_on_line(f, "READY:1.0:04", *now);
+    ArmDecision d = OnLine(f, "READY:1.0:04", *now);
     CHECK(d.action == ARM_ACT_NONE);            // 收到 READY 不下行
     CHECK(f->phase == ARM_PHASE_WAIT_BOOT_DONE);
     *now += 100;
-    d = arm_fsm_on_line(f, "DONE", *now);       // boot 归位完成
+    d = OnLine(f, "DONE", *now);       // boot 归位完成
     CHECK(d.action == ARM_ACT_SEND);            // 转 VERIFY，内部发一次 STATUS
     CHECK(std::strcmp(d.line, "STATUS") == 0);
     CHECK(f->phase == ARM_PHASE_VERIFY_BOOT_HOME);
     *now += 20;
-    d = arm_fsm_on_line(f, "POS:A=90,B=70,C=80,D=90,E=90,F=170;ST=IDLE;ATT=3F", *now);
+    d = OnLine(f, "POS:A=90,B=70,C=80,D=90,E=90,F=170;ST=IDLE;ATT=3F", *now);
     CHECK(f->phase == ARM_PHASE_READY);
     CHECK(f->position_known == 1);
 }
@@ -108,7 +117,7 @@ static void TestAcceptAndDone() {
     CHECK(f.op_state == ARM_OP_PENDING_ACCEPTANCE);
 
     now += 50;
-    d = arm_fsm_on_line(&f, "OK:4200", now);
+    d = OnLine(&f, "OK:4200", now);
     CHECK(d.action == ARM_ACT_REPLY);
     CHECK(d.reply.ok == 1);
     CHECK(d.reply.max_ms == 4200);
@@ -116,7 +125,7 @@ static void TestAcceptAndDone() {
     CHECK(f.op_state == ARM_OP_MOVING);
 
     now += 4000;
-    d = arm_fsm_on_line(&f, "DONE", now);
+    d = OnLine(&f, "DONE", now);
     CHECK(f.op_state == ARM_OP_DONE);
     CHECK(f.position_known == 1);
 }
@@ -132,7 +141,7 @@ static void TestTerminalBeforeAckDiscarded() {
     CHECK(f.op_state == ARM_OP_PENDING_ACCEPTANCE);
 
     now += 10;
-    ArmDecision d = arm_fsm_on_line(&f, "DONE", now);   // 迟到的上一条应答
+    ArmDecision d = OnLine(&f, "DONE", now);   // 迟到的上一条应答
     CHECK(d.action == ARM_ACT_NONE);
     CHECK(f.op_state == ARM_OP_PENDING_ACCEPTANCE);     // 没被误认领
 }
@@ -147,16 +156,16 @@ static void TestStaleTerminalAcrossGeneration() {
     ArmRequest r1 = JointReq('A', 100);
     arm_fsm_on_request(&f, &r1, now);
     now += 50;
-    arm_fsm_on_line(&f, "OK:1000", now);
+    OnLine(&f, "OK:1000", now);
     CHECK(f.op_state == ARM_OP_MOVING);
     uint32_t gen1 = f.operation_generation;
 
     now += 1000 + 1000 + 1;            // max_ms + grace 到期
     ArmDecision d = arm_fsm_on_tick(&f, now);
-    CHECK(d.action == ARM_ACT_SEND);   // deadline 核对：单发一次 STATUS
+    CHECK(d.action == ARM_ACT_DRAIN_AND_SEND);  // 清场：先排空再单发 STATUS
     CHECK(std::strcmp(d.line, "STATUS") == 0);
     now += 20;
-    d = arm_fsm_on_line(&f, "POS:A=100;ST=IDLE;ATT=3F", now);
+    d = OnLine(&f, "POS:A=100;ST=IDLE;ATT=3F", now);
     // 工具在受理时就已返回，此刻没有等待者——只更新状态，不产生 REPLY
     CHECK(d.action == ARM_ACT_NONE);
     CHECK(f.op_state == ARM_OP_LINK_FAILED);
@@ -168,14 +177,19 @@ static void TestStaleTerminalAcrossGeneration() {
     d = arm_fsm_on_request(&f, &r2, now);
     CHECK(d.action == ARM_ACT_SEND);
     now += 30;
-    arm_fsm_on_line(&f, "OK:800", now);
+    OnLine(&f, "OK:800", now);
     CHECK(f.op_state == ARM_OP_MOVING);
 
-    // 操作 1 的迟到 DONE 现在才到 —— 世代不匹配，必须丢弃
+    // 操作 1 的迟到 DONE 现在才到。它是在**旧世代**期间进入串口的，
+    // 用那时的世代快照参与认领——五条条件第五条就是为这一刻存在的。
     now += 10;
-    d = arm_fsm_on_line(&f, "DONE", now);
+    d = OnLineGen(&f, "DONE", gen1, now);
     CHECK(d.action == ARM_ACT_NONE);
     CHECK(f.op_state == ARM_OP_MOVING);     // 操作 2 没被冒领
+
+    // 同一行若带着当前世代到达（即它真是操作 2 的终态），则应被正常认领
+    d = OnLine(&f, "DONE", now);
+    CHECK(f.op_state == ARM_OP_DONE);
 }
 
 // 跨纪元（下位机复位过）的终态同样丢弃
@@ -187,11 +201,11 @@ static void TestStaleTerminalAcrossEpoch() {
     ArmRequest r = JointReq('C', 60);
     arm_fsm_on_request(&f, &r, now);
     now += 50;
-    arm_fsm_on_line(&f, "OK:2000", now);
+    OnLine(&f, "OK:2000", now);
     CHECK(f.op_state == ARM_OP_MOVING);
 
     now += 100;
-    arm_fsm_on_line(&f, "READY:1.0:02", now);   // 对端复位
+    OnLine(&f, "READY:1.0:02", now);   // 对端复位
     CHECK(f.op_state == ARM_OP_RESET);
     CHECK(f.position_known == 0);
     CHECK(f.phase == ARM_PHASE_WAIT_BOOT_DONE);
@@ -199,7 +213,7 @@ static void TestStaleTerminalAcrossEpoch() {
 
     // 复位前那条动作的 DONE 现在才到
     now += 10;
-    ArmDecision d = arm_fsm_on_line(&f, "DONE", now);
+    ArmDecision d = OnLine(&f, "DONE", now);
     // 它会被当作 boot 归位的候选（本纪元首个 DONE），但绝不能恢复旧操作
     CHECK(f.op_state == ARM_OP_RESET);
     CHECK(f.link_epoch == epoch);
@@ -246,7 +260,7 @@ static void TestBusyInferredAcceptance() {
     now += 301;
     arm_fsm_on_tick(&f, now);                 // 重发
     now += 20;
-    ArmDecision d = arm_fsm_on_line(&f, "BUSY", now);
+    ArmDecision d = OnLine(&f, "BUSY", now);
     CHECK(d.action == ARM_ACT_REPLY);
     CHECK(d.reply.ok == 1);
     CHECK(d.reply.max_ms == -1);              // 未知，如实上报
@@ -286,7 +300,7 @@ static void TestNonIdempotentProbeIdleIsUnknown() {
     now += 301;
     arm_fsm_on_tick(&f, now);                 // 发 STATUS 探查
     now += 20;
-    ArmDecision d = arm_fsm_on_line(&f, "POS:A=90;ST=IDLE;ATT=3F", now);
+    ArmDecision d = OnLine(&f, "POS:A=90;ST=IDLE;ATT=3F", now);
     CHECK(d.action == ARM_ACT_REPLY);
     CHECK(d.reply.ok == 0);
     CHECK(d.reply.code == ARM_CODE_ACCEPTANCE_UNKNOWN);   // 不是「未受理」
@@ -304,7 +318,7 @@ static void TestNonIdempotentProbeMovingIsAccepted() {
     now += 301;
     arm_fsm_on_tick(&f, now);
     now += 20;
-    ArmDecision d = arm_fsm_on_line(&f, "ST=MOVING", now);
+    ArmDecision d = OnLine(&f, "ST=MOVING", now);
     CHECK(d.action == ARM_ACT_REPLY);
     CHECK(d.reply.ok == 1);
     CHECK(d.reply.max_ms == -1);
@@ -325,16 +339,114 @@ static void TestImmediateRejections() {
         ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
         uint32_t now = 1000;
         BringUpReady(&f, &now);
-        ArmRequest r = JointReq('A', 200);
+        ArmRequest r = JointReq('A', 95);
         arm_fsm_on_request(&f, &r, now);
         now += 30;
-        ArmDecision d = arm_fsm_on_line(&f, tc.line, now);
+        ArmDecision d = OnLine(&f, tc.line, now);
         CHECK(d.action == ARM_ACT_REPLY);
         CHECK(d.reply.ok == 0);
         CHECK(d.reply.code == tc.code);
         CHECK(f.op_state == ARM_OP_REJECTED);
         CHECK(arm_fsm_recovery_text(tc.code) != nullptr);
         CHECK(arm_fsm_recovery_text(tc.code)[0] != '\0');
+    }
+}
+
+// ------------------------------------------------------------------ 参数白名单
+// 不合规**直接拒绝、不做转义**。转义只会把问题藏起来：一个带换行的预设名
+// 若被拼进命令行，就是第二条 UART 指令，足以绕过「RELAX 不向 agent 暴露」。
+static void TestArgumentWhitelist() {
+    ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
+    uint32_t now = 1000;
+    BringUpReady(&f, &now);
+
+    // ★ 命令注入：换行会把 RELAX 拼成第二条指令
+    ArmRequest inject = NamedReq(ARM_REQ_MOVE_PRESET, "X\nRELAX");
+    ArmDecision d = arm_fsm_on_request(&f, &inject, now);
+    CHECK(d.action == ARM_ACT_REPLY);
+    CHECK(d.reply.ok == 0);
+    CHECK(d.reply.code == ARM_CODE_BAD_ARGUMENT);
+
+    // 冒号会改变命令的参数切分
+    ArmRequest colon = NamedReq(ARM_REQ_PICK, "A:B");
+    d = arm_fsm_on_request(&f, &colon, now);
+    CHECK(d.reply.code == ARM_CODE_BAD_ARGUMENT);
+
+    // 回车同样是行分隔符
+    ArmRequest cr = NamedReq(ARM_REQ_PLACE, "A\rB");
+    d = arm_fsm_on_request(&f, &cr, now);
+    CHECK(d.reply.code == ARM_CODE_BAD_ARGUMENT);
+
+    // 空名与超长名（协议 §4.1：含 _ABOVE 不得越过 14）
+    ArmRequest empty = NamedReq(ARM_REQ_MOVE_PRESET, "");
+    d = arm_fsm_on_request(&f, &empty, now);
+    CHECK(d.reply.code == ARM_CODE_BAD_ARGUMENT);
+    ArmRequest longname = NamedReq(ARM_REQ_MOVE_PRESET, "ABCDEFGHIJKLMNOP");
+    d = arm_fsm_on_request(&f, &longname, now);
+    CHECK(d.reply.code == ARM_CODE_BAD_ARGUMENT);
+
+    // 小写与空格也不放行（协议预设名是大写标识符）
+    ArmRequest lower = NamedReq(ARM_REQ_MOVE_PRESET, "ready");
+    d = arm_fsm_on_request(&f, &lower, now);
+    CHECK(d.reply.code == ARM_CODE_BAD_ARGUMENT);
+
+    // 关节字母越界
+    ArmRequest badjoint = JointReq('Z', 90);
+    d = arm_fsm_on_request(&f, &badjoint, now);
+    CHECK(d.reply.code == ARM_CODE_BAD_ARGUMENT);
+
+    // 角度越界（协议 §5.8 的解析层格式校验，不是关节限位）
+    ArmRequest badangle = JointReq('A', 200);
+    d = arm_fsm_on_request(&f, &badangle, now);
+    CHECK(d.reply.code == ARM_CODE_BAD_ARGUMENT);
+
+    // 合法值放行
+    CHECK(arm_fsm_name_is_valid("READY") == 1);
+    CHECK(arm_fsm_name_is_valid("READY_ABOVE") == 1);
+    CHECK(arm_fsm_name_is_valid("BIN_1") == 1);
+    CHECK(arm_fsm_joint_is_valid('A') == 1);
+    CHECK(arm_fsm_joint_is_valid('F') == 1);
+    CHECK(arm_fsm_joint_is_valid('G') == 0);
+
+    ArmRequest good = NamedReq(ARM_REQ_MOVE_PRESET, "READY");
+    d = arm_fsm_on_request(&f, &good, now);
+    CHECK(d.action == ARM_ACT_SEND);
+    CHECK(std::strcmp(d.line, "MOVE_PRESET:READY") == 0);
+}
+
+// 受理应答之前到达的三种终态**全部**丢弃，不只 DONE
+static void TestAllTerminalsBeforeAckDiscarded() {
+    const char* terminals[] = {"DONE", "OK:STOPPED", "ERROR:TIMEOUT"};
+    for (auto* t : terminals) {
+        ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
+        uint32_t now = 1000;
+        BringUpReady(&f, &now);
+        ArmRequest r = JointReq('B', 75);
+        arm_fsm_on_request(&f, &r, now);
+        now += 10;
+        ArmDecision d = OnLine(&f, t, now);
+        CHECK(d.action == ARM_ACT_NONE);
+        CHECK(f.op_state == ARM_OP_PENDING_ACCEPTANCE);   // 没被当成本条的结果
+    }
+}
+
+// 清场时下位机报的不是干净的 IDLE（ESTOP / RELAXED / 畸形）⇒ fail-closed
+static void TestQuiesceNonIdleFailsClosed() {
+    const char* replies[] = {"ST=ESTOP", "ST=RELAXED", "POS:garbage"};
+    for (auto* rep : replies) {
+        ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
+        uint32_t now = 1000;
+        BringUpReady(&f, &now);
+        ArmRequest r = JointReq('A', 100);
+        arm_fsm_on_request(&f, &r, now);
+        now += 30;
+        OnLine(&f, "OK:500", now);
+        now += 500 + 1000 + 1;
+        arm_fsm_on_tick(&f, now);              // 转清场并发 STATUS
+        now += 20;
+        OnLine(&f, rep, now);
+        CHECK(f.position_known == 0);          // 不当作干净收场
+        CHECK(f.phase == ARM_PHASE_LOCKED_AFTER_RESET);
     }
 }
 
@@ -347,7 +459,7 @@ static void TestLocalBusy() {
     ArmRequest r1 = JointReq('A', 95);
     arm_fsm_on_request(&f, &r1, now);
     now += 30;
-    arm_fsm_on_line(&f, "OK:2000", now);
+    OnLine(&f, "OK:2000", now);
 
     ArmRequest r2 = JointReq('B', 70);
     ArmDecision d = arm_fsm_on_request(&f, &r2, now);
@@ -365,7 +477,7 @@ static void TestStopBypassesMutex() {
     ArmRequest r = JointReq('A', 150);
     arm_fsm_on_request(&f, &r, now);
     now += 30;
-    arm_fsm_on_line(&f, "OK:5000", now);
+    OnLine(&f, "OK:5000", now);
     uint32_t op_id = f.op_id;
 
     ArmRequest s = SimpleReq(ARM_REQ_STOP);
@@ -384,22 +496,22 @@ static void TestStopAckCounting() {
     ArmRequest r = JointReq('A', 150);
     arm_fsm_on_request(&f, &r, now);
     now += 30;
-    arm_fsm_on_line(&f, "OK:5000", now);
+    OnLine(&f, "OK:5000", now);
 
     ArmRequest s = SimpleReq(ARM_REQ_STOP);
     arm_fsm_on_request(&f, &s, now);
     now += 20;
-    ArmDecision d = arm_fsm_on_line(&f, "OK:STOPPED", now);
+    ArmDecision d = OnLine(&f, "OK:STOPPED", now);
     CHECK(d.action == ARM_ACT_REPLY);
     CHECK(d.reply.ok == 1);
     CHECK(f.op_state == ARM_OP_STOPPED);      // 在途动作同时收到终态
 
     // 三连发的另外两条回声
     now += 5;
-    d = arm_fsm_on_line(&f, "OK:STOPPED", now);
+    d = OnLine(&f, "OK:STOPPED", now);
     CHECK(d.action == ARM_ACT_NONE);          // 被吃掉，不再产生 REPLY
     now += 5;
-    d = arm_fsm_on_line(&f, "OK:STOPPED", now);
+    d = OnLine(&f, "OK:STOPPED", now);
     CHECK(d.action == ARM_ACT_NONE);
 
     // 后续新动作不受残留影响
@@ -436,18 +548,18 @@ static void TestQuiesceIdleReleases() {
     ArmRequest r = JointReq('A', 100);
     arm_fsm_on_request(&f, &r, now);
     now += 30;
-    arm_fsm_on_line(&f, "OK:500", now);
+    OnLine(&f, "OK:500", now);
     uint32_t gen = f.operation_generation;
 
     now += 500 + 1000 + 1;
     ArmDecision d = arm_fsm_on_tick(&f, now);
-    CHECK(d.action == ARM_ACT_SEND);
+    CHECK(d.action == ARM_ACT_DRAIN_AND_SEND);
     CHECK(std::strcmp(d.line, "STATUS") == 0);
     CHECK(f.op_state == ARM_OP_QUIESCING);
     CHECK(f.operation_generation == gen);            // ★ 此刻还不能递增
 
     now += 20;
-    d = arm_fsm_on_line(&f, "POS:A=100;ST=IDLE;ATT=3F", now);
+    d = OnLine(&f, "POS:A=100;ST=IDLE;ATT=3F", now);
     CHECK(d.action == ARM_ACT_NONE);          // 无等待者
     CHECK(f.operation_generation != gen);            // 确认空闲后才递增
     ArmRequest r2 = JointReq('B', 70);
@@ -464,19 +576,19 @@ static void TestQuiesceMovingKeepsWaiting() {
     ArmRequest r = JointReq('A', 100);
     arm_fsm_on_request(&f, &r, now);
     now += 30;
-    arm_fsm_on_line(&f, "OK:500", now);
+    OnLine(&f, "OK:500", now);
     uint32_t gen = f.operation_generation;
 
     now += 500 + 1000 + 1;
     arm_fsm_on_tick(&f, now);                 // 发 STATUS
     now += 20;
-    ArmDecision d = arm_fsm_on_line(&f, "ST=MOVING", now);
+    ArmDecision d = OnLine(&f, "ST=MOVING", now);
     CHECK(d.action == ARM_ACT_NONE);          // 还在动，继续等
     CHECK(f.operation_generation == gen);            // ★ 世代未变，终态仍可被认领
     CHECK(f.op_state == ARM_OP_QUIESCING);
 
     now += 200;
-    d = arm_fsm_on_line(&f, "DONE", now);     // 终态终于到了
+    d = OnLine(&f, "DONE", now);     // 终态终于到了
     CHECK(d.action == ARM_ACT_NONE);          // 工具早已返回，这里只收尾
     CHECK(f.op_state == ARM_OP_DONE);
     ArmRequest r2 = JointReq('B', 70);
@@ -513,9 +625,9 @@ static void TestBootWindowIsSilent() {
 static void TestVerifyBootHomeSendsOneStatus() {
     ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
     uint32_t now = 1000;
-    arm_fsm_on_line(&f, "READY:1.1:04", now);
+    OnLine(&f, "READY:1.1:04", now);
     now += 100;
-    ArmDecision d = arm_fsm_on_line(&f, "DONE", now);
+    ArmDecision d = OnLine(&f, "DONE", now);
     CHECK(d.action == ARM_ACT_SEND);
     CHECK(std::strcmp(d.line, "STATUS") == 0);
 
@@ -538,7 +650,7 @@ static void TestNoReadyFallsToLocked() {
 static void TestBootWindowTimeoutFallsToLocked() {
     ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
     uint32_t now = 1000;
-    arm_fsm_on_line(&f, "READY:1.0:04", now);
+    OnLine(&f, "READY:1.0:04", now);
     arm_fsm_on_tick(&f, now + 4001);
     CHECK(f.phase == ARM_PHASE_LOCKED_AFTER_RESET);
     CHECK(f.position_known == 0);
@@ -548,7 +660,7 @@ static void TestBootWindowTimeoutFallsToLocked() {
 static void TestLockedAllowsHomeOnly() {
     ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
     uint32_t now = 1000;
-    arm_fsm_on_line(&f, "READY:1.0:04", now);
+    OnLine(&f, "READY:1.0:04", now);
     arm_fsm_on_tick(&f, now + 4001);
     now += 4001;
     CHECK(f.phase == ARM_PHASE_LOCKED_AFTER_RESET);
@@ -580,16 +692,16 @@ static void TestLockedAllowsHomeOnly() {
 static void TestRecoveryHomeSuccess() {
     ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
     uint32_t now = 1000;
-    arm_fsm_on_line(&f, "READY:1.0:04", now);
+    OnLine(&f, "READY:1.0:04", now);
     arm_fsm_on_tick(&f, now + 4001);
     now += 4001;
 
     ArmRequest home = SimpleReq(ARM_REQ_HOME);
     arm_fsm_on_request(&f, &home, now);
     now += 30;
-    arm_fsm_on_line(&f, "OK:2600", now);
+    OnLine(&f, "OK:2600", now);
     now += 2000;
-    arm_fsm_on_line(&f, "DONE", now);
+    OnLine(&f, "DONE", now);
     CHECK(f.phase == ARM_PHASE_READY);
     CHECK(f.position_known == 1);
 }
@@ -600,17 +712,17 @@ static void TestRecoveryHomeFailureExits() {
     for (auto* t : terminals) {
         ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
         uint32_t now = 1000;
-        arm_fsm_on_line(&f, "READY:1.0:04", now);
+        OnLine(&f, "READY:1.0:04", now);
         arm_fsm_on_tick(&f, now + 4001);
         now += 4001;
 
         ArmRequest home = SimpleReq(ARM_REQ_HOME);
         arm_fsm_on_request(&f, &home, now);
         now += 30;
-        arm_fsm_on_line(&f, "OK:2600", now);
+        OnLine(&f, "OK:2600", now);
         CHECK(f.phase == ARM_PHASE_RECOVERING_HOME);
         now += 100;
-        arm_fsm_on_line(&f, t, now);
+        OnLine(&f, t, now);
         CHECK(f.position_known == 0);
         CHECK(f.phase == ARM_PHASE_LOCKED_AFTER_RESET ||
               f.phase == ARM_PHASE_WAIT_BOOT_DONE);   // 再次 READY 走 boot 路径
@@ -619,7 +731,7 @@ static void TestRecoveryHomeFailureExits() {
     // 第四个出口：链路故障
     ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
     uint32_t now = 1000;
-    arm_fsm_on_line(&f, "READY:1.0:04", now);
+    OnLine(&f, "READY:1.0:04", now);
     arm_fsm_on_tick(&f, now + 4001);
     now += 4001;
     ArmRequest home = SimpleReq(ARM_REQ_HOME);
@@ -639,9 +751,9 @@ static void TestNormalHomeFailureDegrades() {
     ArmRequest home = SimpleReq(ARM_REQ_HOME);
     arm_fsm_on_request(&f, &home, now);
     now += 30;
-    arm_fsm_on_line(&f, "OK:2600", now);
+    OnLine(&f, "OK:2600", now);
     now += 100;
-    arm_fsm_on_line(&f, "OK:STOPPED", now);   // 归位途中被停
+    OnLine(&f, "OK:STOPPED", now);   // 归位途中被停
     CHECK(f.position_known == 0);             // ★ 下位机已 detach，位置不再可信
     CHECK(f.phase == ARM_PHASE_LOCKED_AFTER_RESET);
 }
@@ -656,7 +768,7 @@ static void TestStatusDoesNotPollWhileMoving() {
     ArmRequest r = JointReq('A', 95);
     arm_fsm_on_request(&f, &r, now);
     now += 30;
-    arm_fsm_on_line(&f, "OK:3000", now);
+    OnLine(&f, "OK:3000", now);
     CHECK(f.op_state == ARM_OP_MOVING);
 
     CHECK(arm_fsm_status_needs_uart(&f) == 0);   // ★ 动作中返回缓存
@@ -665,16 +777,51 @@ static void TestStatusDoesNotPollWhileMoving() {
     CHECK(d.action == ARM_ACT_REPLY);            // 不产生任何发送
 }
 
+// 空闲时的 status 查询会打串口——回报到达时**必须**产生 REPLY，
+// 否则工具调用会一直干等到超时并误报 LINK。
+static void TestIdleStatusQueryGetsReply() {
+    ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
+    uint32_t now = 1000;
+    BringUpReady(&f, &now);
+    CHECK(arm_fsm_status_needs_uart(&f) == 1);
+
+    ArmRequest st = SimpleReq(ARM_REQ_STATUS);
+    ArmDecision d = arm_fsm_on_request(&f, &st, now);
+    CHECK(d.action == ARM_ACT_SEND);
+    CHECK(std::strcmp(d.line, "STATUS") == 0);
+
+    now += 20;
+    d = OnLine(&f, "POS:A=90,B=70,C=80,D=90,E=90,F=170;ST=IDLE;ATT=3F", now);
+    CHECK(d.action == ARM_ACT_REPLY);            // ★ 有人在等，必须应答
+    CHECK(d.reply.ok == 1);
+    CHECK(f.has_pos == 1);
+    CHECK(f.joints[0] == 90 && f.joints[5] == 170);
+
+    // 回报消费掉后不应再重复产生 REPLY
+    now += 10;
+    d = OnLine(&f, "POS:A=90;ST=IDLE;ATT=3F", now);
+    CHECK(d.action == ARM_ACT_NONE);
+}
+
+// POS 行解析
+static void TestParsePos() {
+    int j[6] = {0};
+    CHECK(arm_fsm_parse_pos("POS:A=90,B=70,C=80,D=90,E=90,F=170;ST=IDLE;ATT=3F", j) == 1);
+    CHECK(j[0] == 90 && j[1] == 70 && j[2] == 80 && j[3] == 90 && j[4] == 90 && j[5] == 170);
+    CHECK(arm_fsm_parse_pos("ST=MOVING", j) == 0);
+    CHECK(arm_fsm_parse_pos("POS:A=1;ST=IDLE", j) == 0);   // 不足六个
+}
+
 // ------------------------------------------------------------------ 版本与映射
 static void TestVersionAndCollisionGuard() {
     ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
     uint32_t now = 1000;
-    arm_fsm_on_line(&f, "READY:1.0:04", now);
+    OnLine(&f, "READY:1.0:04", now);
     CHECK(f.fw_major == 1 && f.fw_minor == 0);
     CHECK(f.collision_guard == 0);
 
     ArmFsm g; arm_fsm_init(&g, &c);
-    arm_fsm_on_line(&g, "PONG:1.1", now);
+    OnLine(&g, "PONG:1.1", now);
     CHECK(g.fw_major == 1 && g.fw_minor == 1);
     CHECK(g.collision_guard == 1);
 }
@@ -684,17 +831,17 @@ static void TestCollisionMappedOnBothVersions() {
     for (const char* ready : {"READY:1.0:04", "READY:1.1:04"}) {
         ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
         uint32_t now = 1000;
-        arm_fsm_on_line(&f, ready, now);
+        OnLine(&f, ready, now);
         now += 100;
-        arm_fsm_on_line(&f, "DONE", now);
+        OnLine(&f, "DONE", now);
         now += 20;
-        arm_fsm_on_line(&f, "POS:A=90;ST=IDLE;ATT=3F", now);
+        OnLine(&f, "POS:A=90;ST=IDLE;ATT=3F", now);
         CHECK(f.phase == ARM_PHASE_READY);
 
         ArmRequest r = JointReq('C', 40);
         arm_fsm_on_request(&f, &r, now);
         now += 30;
-        ArmDecision d = arm_fsm_on_line(&f, "ERROR:COLLISION", now);
+        ArmDecision d = OnLine(&f, "ERROR:COLLISION", now);
         CHECK(d.reply.code == ARM_CODE_COLLISION);
         CHECK(std::strstr(arm_fsm_recovery_text(ARM_CODE_COLLISION), "extend") != nullptr ||
               std::strstr(arm_fsm_recovery_text(ARM_CODE_COLLISION), "Extend") != nullptr);
@@ -754,6 +901,9 @@ int main() {
     TestNonIdempotentProbeIdleIsUnknown();
     TestNonIdempotentProbeMovingIsAccepted();
     TestImmediateRejections();
+    TestArgumentWhitelist();
+    TestAllTerminalsBeforeAckDiscarded();
+    TestQuiesceNonIdleFailsClosed();
     TestLocalBusy();
     TestStopBypassesMutex();
     TestStopAckCounting();
@@ -769,6 +919,8 @@ int main() {
     TestRecoveryHomeFailureExits();
     TestNormalHomeFailureDegrades();
     TestStatusDoesNotPollWhileMoving();
+    TestIdleStatusQueryGetsReply();
+    TestParsePos();
     TestVersionAndCollisionGuard();
     TestCollisionMappedOnBothVersions();
     TestRecoveryTextComplete();
