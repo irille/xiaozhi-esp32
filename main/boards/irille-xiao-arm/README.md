@@ -106,6 +106,16 @@ cd firmware && idf.py -p <端口> flash monitor
 | `self.arm.place_to_preset` | `PLACE:<name>` | **非幂等** |
 | `self.arm.status` | `STATUS` | 动作进行中返回缓存，不打扰下位机 |
 
+`status` 的返回里带一个 `link` 段——**12V 通电时 USB 必须拔掉**（5V 脚与 USB 无二极管
+隔离），那时没有串口日志，所以链路层的验收断言全落在这几个量上：
+
+```json
+"link": {"phase": "ready", "epoch": 1, "ready_seen": true, "rx_dropped": 0}
+```
+
+`epoch` 每见一次 `READY` 自增 ⇒ 对端复位的可断言证据；`rx_dropped` 是撕裂/超长而整行
+作废的计数 ⇒ 丢弃不静默。
+
 另有一个非机械臂工具由本板注册：`self.camera.explain_result`（取异步图像分析结果，
 见下「继承工具的主循环占用」）。
 

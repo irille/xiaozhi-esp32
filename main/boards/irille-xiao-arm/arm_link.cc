@@ -104,12 +104,14 @@ int ArmLink::ReadLine(char* out, int cap, int timeout_ms) {
         if (uart_read_bytes(ARM_UART_PORT, &ch, 1, wait) != 1) {
             if (!started) return 0;               // 本轮压根没数据
             ESP_LOGW(TAG, "rx: line torn mid-frame, dropped (%d B)", len);
+            rx_dropped_++;
             return -1;                            // 半行作废，不交给决策器
         }
         started = true;
         if (ch == '\n') {
             if (overflow) {
                 ESP_LOGW(TAG, "rx: oversized line dropped");
+                rx_dropped_++;
                 return -1;
             }
             out[len] = '\0';
@@ -271,5 +273,9 @@ void ArmLink::Snapshot(ArmStatusSnapshot* out) {
     out->fw_major = fsm_.fw_major;
     out->fw_minor = fsm_.fw_minor;
     out->collision_guard = fsm_.collision_guard;
+    out->phase = arm_fsm_phase_name(fsm_.phase);
+    out->link_epoch = fsm_.link_epoch;
+    out->ready_seen = fsm_.ready_seen;
+    out->rx_dropped = rx_dropped_;
     xSemaphoreGive(mutex_);
 }

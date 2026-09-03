@@ -85,14 +85,25 @@ inline std::string StatusToJson(const ArmStatusSnapshot& s) {
                       (unsigned)s.op_id, s.op_state, ms);
     }
 
-    char buf[512];
+    // link 段是给**没有串口日志时**的验收断言用的：12V 通电时 USB 必须拔掉
+    // （XIAO 5V 脚与 USB 无二极管隔离），T031「捕获 READY」、T042「复位判定」、
+    // T043「RX 丢弃不静默」原本都是日志观测项，现在断言这几个量即可。
+    //
+    // 上界：字面量 205 + position_known 5 + op 271 + joints 103 + arm_state 6
+    //      + version 5（parse_version 限死 0–99）+ collision 5 + phase 18
+    //      + epoch 10 + ready_seen 5 + rx_dropped 10 = 643。
+    char buf[704];
     std::snprintf(buf, sizeof buf,
                   "{\"ok\":true,\"position_known\":%s,\"operation\":%s,\"joints\":%s,"
                   "\"arm_state\":\"%s\",\"controller_version\":\"%d.%d\","
-                  "\"collision_guard\":%s}",
+                  "\"collision_guard\":%s,"
+                  "\"link\":{\"phase\":\"%s\",\"epoch\":%u,\"ready_seen\":%s,"
+                  "\"rx_dropped\":%u}}",
                   s.position_known ? "true" : "false", op, joints,
                   s.arm_moving ? "moving" : "idle", s.fw_major, s.fw_minor,
-                  s.collision_guard ? "true" : "false");
+                  s.collision_guard ? "true" : "false",
+                  s.phase, (unsigned)s.link_epoch,
+                  s.ready_seen ? "true" : "false", (unsigned)s.rx_dropped);
     return std::string(buf);
 }
 

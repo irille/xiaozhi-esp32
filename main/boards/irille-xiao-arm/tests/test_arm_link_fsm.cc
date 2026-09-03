@@ -1136,6 +1136,52 @@ static void TestCollisionMappedOnBothVersions() {
     }
 }
 
+// 阶段名必须每个分支都独一无二。12V 通电时拔了 USB 就没有串口日志，
+// T031「捕获 READY」/ T042「复位判定」全靠 status 里这个名字断言——
+// 漏一个分支会落进 default，验收读到的是**错的阶段**而不是报错。
+static void TestPhaseNamesComplete() {
+    ArmPhase all[] = {ARM_PHASE_WAIT_BOOT_DONE, ARM_PHASE_VERIFY_BOOT_HOME,
+                      ARM_PHASE_READY, ARM_PHASE_LOCKED_AFTER_RESET,
+                      ARM_PHASE_RECOVERING_HOME};
+    const int n = (int)(sizeof all / sizeof all[0]);
+    for (int i = 0; i < n; ++i) {
+        const char* a = arm_fsm_phase_name(all[i]);
+        CHECK(a != nullptr);
+        CHECK(a[0] != '\0');
+        for (int j = i + 1; j < n; ++j) {
+            CHECK(std::strcmp(a, arm_fsm_phase_name(all[j])) != 0);   // ★ 不得重名
+        }
+    }
+    CHECK(std::strcmp(arm_fsm_phase_name(ARM_PHASE_READY), "ready") == 0);
+    CHECK(std::strcmp(arm_fsm_phase_name(ARM_PHASE_LOCKED_AFTER_RESET),
+                      "locked_after_reset") == 0);
+}
+
+// 没有日志时，验收断言的是 phase + link_epoch + ready_seen 三个量。
+// 这条把它们在关键路径上的取值钉死，免得将来改状态机时悄悄漂了。
+static void TestObservablesTrackLifecycle() {
+    ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
+    uint32_t now = 1000;
+
+    // 上电：还没见过 READY —— 这正是「board 启动晚于下位机」与「见过 READY 在等
+    // DONE」的判别点，两者的 phase 相同，只有 ready_seen 能分开。
+    CHECK(std::strcmp(arm_fsm_phase_name(f.phase), "wait_boot_done") == 0);
+    CHECK(f.ready_seen == 0);
+    CHECK(f.link_epoch == 0);
+
+    BringUpReady(&f, &now);
+    CHECK(std::strcmp(arm_fsm_phase_name(f.phase), "ready") == 0);
+    CHECK(f.ready_seen == 1);
+    CHECK(f.link_epoch == 1);          // 见过一次 READY
+
+    // 对端中途复位：epoch 自增即为「下位机复位过」的可断言证据（T042）
+    now += 500;
+    OnLine(&f, "READY:1.0:04", now);
+    CHECK(f.link_epoch == 2);
+    CHECK(std::strcmp(arm_fsm_phase_name(f.phase), "wait_boot_done") == 0);
+    CHECK(f.position_known == 0);
+}
+
 static void TestRecoveryTextComplete() {
     ArmCode all[] = {ARM_CODE_LIMIT, ARM_CODE_COLLISION, ARM_CODE_BUSY, ARM_CODE_ESTOP,
                      ARM_CODE_RELAXED, ARM_CODE_UNKNOWN_PRESET, ARM_CODE_INVALID_COMMAND,
@@ -1230,6 +1276,8 @@ int main() {
     TestParsePos();
     TestVersionAndCollisionGuard();
     TestCollisionMappedOnBothVersions();
+    TestPhaseNamesComplete();
+    TestObservablesTrackLifecycle();
     TestRecoveryTextComplete();
     TestCommandRendering();
 

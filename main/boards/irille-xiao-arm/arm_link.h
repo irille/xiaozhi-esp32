@@ -26,6 +26,13 @@ struct ArmStatusSnapshot {
     int         fw_major;
     int         fw_minor;
     int         collision_guard;
+    // 下面四个是给**没有串口日志时**的验收断言用的：12V 通电时 USB 必须拔掉
+    // （XIAO 5V 脚与 USB 无二极管隔离），「捕获 READY」「复位判定」「RX 丢弃」
+    // 这些原本靠 ESP_LOG 观测的项，只能从 status 里读。
+    const char* phase;         // 链路阶段
+    uint32_t    link_epoch;    // 每见一次 READY +1 ⇒ 对端复位次数
+    int         ready_seen;    // 本纪元见过 READY（区分"没见过"与"见过在等 DONE"）
+    uint32_t    rx_dropped;    // 撕裂/超长而整行作废的计数，不静默丢
 };
 
 class ArmLink {
@@ -41,6 +48,8 @@ class ArmLink {
     void Snapshot(ArmStatusSnapshot* out);
 
  private:
+    uint32_t rx_dropped_ = 0;   // 只在 RX owner 任务里自增，Snapshot 持锁读
+
     static void RxOwnerTrampoline(void* arg);
     void RxOwnerLoop();
 

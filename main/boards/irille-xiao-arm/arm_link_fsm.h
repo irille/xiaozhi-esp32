@@ -242,6 +242,7 @@ int         arm_fsm_has_prefix(const char* s, const char* prefix);
 const char* arm_fsm_recovery_text(ArmCode code);
 const char* arm_fsm_code_name(ArmCode code);
 const char* arm_fsm_op_state_name(ArmOpState st);
+const char* arm_fsm_phase_name(ArmPhase ph);
 
 // 位置不再可信时的唯一落锁点
 void lock_position_lost(ArmFsm* fsm);

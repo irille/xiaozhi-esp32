@@ -118,6 +118,19 @@ const char* arm_fsm_code_name(ArmCode code) {
     }
 }
 
+// 链路阶段对外可见：12V 通电时 USB 必须拔掉（XIAO 5V 脚与 USB 无二极管隔离），
+// 那时没有串口日志，「捕获 READY」「复位后锁定」这些验收项只能靠 status 断言。
+const char* arm_fsm_phase_name(ArmPhase ph) {
+    switch (ph) {
+        case ARM_PHASE_WAIT_BOOT_DONE:     return "wait_boot_done";
+        case ARM_PHASE_VERIFY_BOOT_HOME:   return "verify_boot_home";
+        case ARM_PHASE_READY:              return "ready";
+        case ARM_PHASE_LOCKED_AFTER_RESET: return "locked_after_reset";
+        case ARM_PHASE_RECOVERING_HOME:    return "recovering_home";
+        default:                           return "wait_boot_done";
+    }
+}
+
 const char* arm_fsm_op_state_name(ArmOpState st) {
     switch (st) {
         case ARM_OP_IDLE: return "idle";
