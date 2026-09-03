@@ -106,6 +106,9 @@ cd firmware && idf.py -p <端口> flash monitor
 | `self.arm.place_to_preset` | `PLACE:<name>` | **非幂等** |
 | `self.arm.status` | `STATUS` | 动作进行中返回缓存，不打扰下位机 |
 
+另有一个非机械臂工具由本板注册：`self.camera.explain_result`（取异步图像分析结果，
+见下「继承工具的主循环占用」）。
+
 `RELAX` 不注册为 agent 工具（协议 §4.1 标注"仅维护"）。
 
 ### 返回契约：同步受理 + 异步终态
@@ -136,22 +139,63 @@ cd firmware && idf.py -p <端口> flash monitor
 这不是洁癖：一个带换行的预设名（`"X\nRELAX"`）拼进命令行就是**第二条 UART 指令**，
 足以绕过"`RELAX` 不向 agent 暴露"这条边界。转义只会把问题藏起来。
 
-### 继承工具的主循环占用
+### 继承工具的主循环占用（相机改异步的原因）
 
-本板返回 `Camera` 后，上游会自动注册同步的 `self.camera.take_photo`，它占用的是
-**和 `self.arm.stop` 同一条主循环**。按宪法 III.2 的继承工具条款，它的占用 p95
-必须 ≤ 1.4 s 上界：
+本板返回 `Camera` 后，上游 `mcp_server.cc:111` 会自动注册 `self.camera.take_photo`，
+其回调经 `app.Schedule()` 在 Application 主任务里**同步**跑完 `Capture()` + `Explain()`
+——占用的正是 `self.arm.stop` 排队等的那条主循环。
 
-| 工具 | 配置 | 实测 p95 | 上界 | 结论 |
-|---|---|---:|---:|---|
-| `self.camera.take_photo` | 640×480 JPEG，LAN 到 irille-test | _待 T035a 回填_ | 1.4 s | _待定_ |
+**T035a 实测（连三次，`>> % self_camera_take_photo` → `Explain image size` 完成）**：
 
-超限先降配置（分辨率/质量），降无可降则不暴露该工具——**不改 core**。
+| 采样 | 主循环占用 | 拆解 |
+|---|---:|---|
+| ① | 4,370 ms | 抓帧 120 ms + 连接 10 ms + **上传与等应答 4,240 ms** |
+| ② | 5,050 ms | 同型 |
+| ③ | 4,980 ms | 同型 |
 
-⚠️ **实测必须覆盖"explain 端点不可达"这一路**：`EspVideo::Explain` 等的是 `portMAX_DELAY`
-加网络 I/O——**这不是"慢"，是无界等待**。只测端点正常时的 p95 测不出最坏情况；服务端
-挂掉或网络不通时，这个回调会把主循环连同排在后面的 `self.arm.stop` 一起挂住。
-实测时请把端点断开跑一次，记录实际表现。
+p95 ≈ **5.0 s**，是 1.4 s 上界的 3.5 倍。瓶颈**不在图上**：21–23 KB 在 LAN 上传输是
+毫秒级，那 4.2 s 几乎全是服务端 VLLM 推理——所以宪法 III.2 的「先降配置」在这里降不动，
+分辨率砍到 320×240 也省不下推理时间。
+
+**处置：board 层异步派发**（`async_camera.{h,cc}`，core 一行不改）：
+
+| 工具 | 主循环占用（实测） | 说明 |
+|---|---:|---|
+| `self.camera.take_photo` | **~0.12–0.13 s** | 抓帧后即返回 "analysis in progress" |
+| `self.camera.explain_result` | 微秒级 | 取结果：pending / 分析文本 / error |
+
+改造后复测（同一台 irille-test，640×480 JPEG）：
+
+```
+227159  >> % self_camera_take_photo          工具调用到达（主任务）
+227279  EspVideo: mmap_buffers... 640×480    抓帧完成，+120 ms → 主任务到此为止
+227289  HttpClient: Established connection   已在 worker 上
+241659  >> % self_camera_explain_result      ★ 分析仍在进行，主任务照常处理新工具调用
+241669  explain job 0 finished (ok=1) after 14 s, worker stack high water = 8396 B
+```
+
+★ 那一行是最硬的证据：主循环在分析期间是活的。这次推理花了 **14 s**——放在改造前
+就是 14 s 的主循环冻结，`self.arm.stop` 在这期间发不出去。worker 栈 10,240 B 用掉约
+1.8 KB。
+
+agent 两步取图说明。并发保护落在 `Capture()`：上一次分析未完就再拍会覆盖基类的
+`frame_`，此时直接返回 false，上游如实抛错，**不静默排队**。
+
+**结果不按时间作废**：大模型思考 30–60 s 属正常，`explain_result` 在结果到达前一律回
+`pending` 并报出已等待秒数，结果何时到就何时能取，直到被下一次抓帧覆盖。唯一的时间
+常数是 `CAMERA_EXPLAIN_STALE_S`（`config.h`，默认 90 s），它**只**管一件事：新的
+`take_photo` 到来而旧任务仍在跑时，旧任务年龄 ≥ 该值即判陈旧、其结果作废（job id
+对不上即丢）——这是给「服务端失联、worker 卡死」兜底的，不是给正常推理设限。
+
+⚠️ **两条诚实的残留**：
+
+1. 上游 HTTP 走 `http_client.cc` + `esp_tcp.cc`，全链路没设过 socket 接收超时——服务端
+   接了连接却不回时，那个读是无界阻塞。board 层治不了它（要动 core），但它现在阻塞的是
+   worker 不是主循环，**`self.arm.stop` 不再被挡**，这才是那条上界真正要保的东西。
+2. 因此「判陈旧后」只能**作废旧结果**，做不到**立刻开新任务**：`EspVideo::Explain` 用
+   成员 `encoder_thread_`，旧 worker 未退出时再进一次会对 joinable 的 `std::thread`
+   赋值 → `std::terminate`。卡死期间 `take_photo` 仍如实回「相机忙」，只是不会再把那份
+   迟到的说明喂给下一次提问。要做到真正的抢占得改 core，不在允许改动区内。
 
 ### 安全边界
 
@@ -171,6 +215,7 @@ cd firmware && idf.py -p <端口> flash monitor
 | `arm_link_fsm.{c,h}` | **全部决策**：行分类、应答匹配、操作事务、重发、终态认领、链路状态机、急停路径、错误映射。零 ESP-IDF 依赖 |
 | `arm_link.{h,cc}` | **纯 IO**：UART 读写、唯一的 RX owner 任务、执行决策器的输出。不含判断 |
 | `arm_tools.h` | **纯序列化**：把决策器的输出拼成 JSON。不含判断 |
+| `async_camera.{h,cc}` | 继承工具治理：把 `Explain` 的推理等待挪出主循环，结果经 `explain_result` 取 |
 | `irille_xiao_arm_board.cc` | 板级装配：codec / camera / LED / ArmLink |
 
 这条边界就是可测边界：留在 `.cc` 里的判断只能上板才能测，而上板测的是 25 kg 舵机。

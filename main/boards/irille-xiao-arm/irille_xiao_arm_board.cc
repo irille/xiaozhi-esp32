@@ -3,7 +3,7 @@
 #include "application.h"
 #include "button.h"
 #include "config.h"
-#include "esp_video.h"
+#include "async_camera.h"
 #include "led/gpio_led.h"
 #include "arm_link.h"
 #include "arm_tools.h"
@@ -19,7 +19,7 @@
 class IrilleXiaoArmBoard : public WifiBoard {
  private:
     Button boot_button_;
-    EspVideo* camera_ = nullptr;
+    AsyncExplainCamera* camera_ = nullptr;
     ArmLink arm_link_;
 
     void InitializeButtons() {
@@ -75,7 +75,7 @@ class IrilleXiaoArmBoard : public WifiBoard {
             .dvp = &dvp_config,
         };
 
-        camera_ = new EspVideo(video_config);
+        camera_ = new AsyncExplainCamera(video_config);
 
         // ⚠️ 相机在爪端装反：只翻上下，**不镜像**（治具实测 2026-08-29）。
         // 镜像会让 agent 的左右决策系统性反转——spec §7.5 的硬契约，#27 有先例。
@@ -92,6 +92,24 @@ class IrilleXiaoArmBoard : public WifiBoard {
         // 链路先起：它进入上电归位窗口（零下行），等下位机自己走完自动归位。
         arm_link_.Start();
         arm_tools::Register(arm_link_);
+        RegisterCameraResultTool();
+    }
+
+    // take_photo 只到「已抓帧」就返回，说明由这个工具取（见 async_camera.h 的
+    // 主循环占用说明）。文案英文：与 self.arm.* 同理，工具面跨实例共享。
+    void RegisterCameraResultTool() {
+        auto* camera = camera_;
+        McpServer::GetInstance().AddTool(
+            "self.camera.explain_result",
+            "Fetch the analysis of the most recent self.camera.take_photo. That tool returns as "
+            "soon as the image is captured - the analysis runs asynchronously so the device main "
+            "loop stays responsive. Call this one or two seconds later.\n"
+            "Return:\n"
+            "  A JSON object: the analysis when ready, or a pending / error status.",
+            PropertyList(),
+            [camera](const PropertyList&) -> ReturnValue {
+                return camera->PollResult();
+            });
     }
 
     virtual Led* GetLed() override {
