@@ -165,7 +165,6 @@ typedef struct {
 
     // boot 归位确认
     uint32_t boot_window_start_ms;
-    int      boot_window_armed;   // 收到 READY 后置 1
     // 本纪元是否真的见过 READY。没有完整的 READY → DONE 证据链就不得认定位置已知：
     // board 启动晚于下位机时，一个孤儿 DONE 不能被当成 boot 归位。
     int      ready_seen;

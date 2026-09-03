@@ -227,7 +227,10 @@ void lock_position_lost(ArmFsm* f) { f->position_known = 0; f->phase = ARM_PHASE
 
 // 信任降级是**终态的属性**，不是各调用点的动作。收在表里，漏一处在结构上就不可能。
 //   RESET              下位机复位，位置全丢
-//   TIMED_OUT          下位机锁存急停并 detach（recovery 文案自己写着要 home）
+//   TIMED_OUT          下位机锁存 ESTOP，此后任何运动都会被拒直到一次 HOME；
+//                      而超时的若是 HOME，motion_abort_clear() 还会 detach，位置真的丢
+//                      （protocol.cpp:405 只在归位时 detach，普通动作超时只锁存——
+//                       这里一律降级是取保守，不是因为普通动作也 detach）
 //   ACCEPTANCE_UNKNOWN 不知道动作有没有发生，也就不知道臂在哪
 // DONE / STOPPED / REJECTED 不在其中：闭环动作停在当前角，下位机仍知道自己在哪。
 // LINK_FAILED 也不在——清场确认空闲后位置由 POS 回报兜住；清场**没**确认空闲的那条
@@ -273,7 +276,6 @@ static void enter_wait_boot(ArmFsm* f, uint32_t now_ms) {
     f->phase = ARM_PHASE_WAIT_BOOT_DONE;
     f->position_known = 0;
     f->boot_window_start_ms = now_ms;
-    f->boot_window_armed = 1;
 }
 
 static void parse_version(ArmFsm* f, const char* p) {
@@ -347,8 +349,7 @@ void arm_fsm_init(ArmFsm* fsm, const ArmFsmConfig* cfg) {
     fsm->phase = ARM_PHASE_WAIT_BOOT_DONE;
     fsm->op_state = ARM_OP_IDLE;
     fsm->op_max_ms = -1;
-    fsm->boot_window_armed = 1;   // board 启动即计时：始终等不到 READY 也要落锁
-    fsm->boot_window_start_ms = 0;
+    fsm->boot_window_start_ms = 0;   // board 启动即计时：始终等不到 READY 也要落锁
     fsm->ack_timeout_ms = cfg->ack_timeout_ms;
     fsm->done_grace_ms = cfg->done_grace_ms;
     fsm->fallback_deadline_ms = cfg->fallback_deadline_ms;
@@ -654,10 +655,10 @@ ArmDecision arm_fsm_on_line(ArmFsm* f, const char* line, uint32_t rx_generation,
 ArmDecision arm_fsm_on_tick(ArmFsm* f, uint32_t now_ms) {
     // 上电窗口超时：包括「board 启动晚于下位机、始终没见 READY」这一路。
     // 没有完整的 READY → DONE 证据链就不得认定位置已知。
+    // phase 本身就是闸——落锁会把它改成 LOCKED_AFTER_RESET，这段不会再进第二次。
     if ((f->phase == ARM_PHASE_WAIT_BOOT_DONE || f->phase == ARM_PHASE_VERIFY_BOOT_HOME) &&
-        f->boot_window_armed && elapsed_past(now_ms, f->boot_window_start_ms, f->boot_window_ms)) {
+        elapsed_past(now_ms, f->boot_window_start_ms, f->boot_window_ms)) {
         lock_position_lost(f);
-        f->boot_window_armed = 0;
         return none_();
     }
 
