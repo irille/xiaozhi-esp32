@@ -59,6 +59,28 @@ inline std::string ReplyToJson(const ArmReply& r) {
     return std::string(buf);
 }
 
+// link 段单独成函数，因为**成功与失败两种形态都要带上它**。
+// 链路断掉时返回的错误形态若不带诊断量，就等于在最需要排查的时刻把仪表关了——
+// 12V 通电时没有串口日志，这几个数是唯一的观测手段。
+inline void RenderLink(char* out, size_t n, const ArmStatusSnapshot& s) {
+    std::snprintf(out, n,
+                  "{\"phase\":\"%s\",\"epoch\":%u,\"ready_seen\":%s,"
+                  "\"rx_bytes\":%u,\"rx_dropped\":%u,\"rx_malformed\":%u}",
+                  s.phase, (unsigned)s.link_epoch, s.ready_seen ? "true" : "false",
+                  (unsigned)s.rx_bytes, (unsigned)s.rx_dropped, (unsigned)s.rx_malformed);
+}
+
+// 失败形态 + link 段。上界：错误体 ≤ 207 + `,"link":` 8 + link 段 ≤ 167 = 382。
+inline std::string StatusErrorToJson(const ArmReply& r, const ArmStatusSnapshot& s) {
+    char link[168];
+    RenderLink(link, sizeof link, s);
+    char buf[416];
+    std::snprintf(buf, sizeof buf,
+                  "{\"ok\":false,\"code\":\"%s\",\"recovery\":\"%s\",\"link\":%s}",
+                  arm_fsm_code_name(r.code), arm_fsm_recovery_text(r.code), link);
+    return std::string(buf);
+}
+
 inline std::string StatusToJson(const ArmStatusSnapshot& s) {
     char joints[104] = "null";
     if (s.has_pos) {
@@ -85,6 +107,9 @@ inline std::string StatusToJson(const ArmStatusSnapshot& s) {
                       (unsigned)s.op_id, s.op_state, ms);
     }
 
+    char link[168];
+    RenderLink(link, sizeof link, s);
+
     // link 段是给**没有串口日志时**的验收断言用的：12V 通电时 USB 必须拔掉
     // （XIAO 5V 脚与 USB 无二极管隔离），T031「捕获 READY」、T042「复位判定」、
     // T043「RX 丢弃不静默」原本都是日志观测项，现在断言这几个量即可。
@@ -96,14 +121,10 @@ inline std::string StatusToJson(const ArmStatusSnapshot& s) {
     std::snprintf(buf, sizeof buf,
                   "{\"ok\":true,\"position_known\":%s,\"operation\":%s,\"joints\":%s,"
                   "\"arm_state\":\"%s\",\"controller_version\":\"%d.%d\","
-                  "\"collision_guard\":%s,"
-                  "\"link\":{\"phase\":\"%s\",\"epoch\":%u,\"ready_seen\":%s,"
-                  "\"rx_dropped\":%u}}",
+                  "\"collision_guard\":%s,\"link\":%s}",
                   s.position_known ? "true" : "false", op, joints,
                   s.arm_moving ? "moving" : "idle", s.fw_major, s.fw_minor,
-                  s.collision_guard ? "true" : "false",
-                  s.phase, (unsigned)s.link_epoch,
-                  s.ready_seen ? "true" : "false", (unsigned)s.rx_dropped);
+                  s.collision_guard ? "true" : "false", link);
     return std::string(buf);
 }
 
@@ -246,13 +267,17 @@ inline void Register(ArmLink& link) {
                     // 是否需要打串口由决策器裁定；这里无条件走 Request，
                     // 它在已知 moving 时会直接返回缓存。
                     ArmReply r = link.Request(MakeReq(ARM_REQ_STATUS));
-                    if (!r.ok) {
-                        // 查询本身失败（链路断、对端复位）就如实报——
-                        // 拿旧快照冒充成功，等于向 agent 谎报机械臂的状态。
-                        return ReplyToJsonOrThrow(r);
-                    }
                     ArmStatusSnapshot s = {};
                     link.Snapshot(&s);
+                    if (!r.ok) {
+                        // 查询本身失败（链路断、对端复位）就如实报——拿旧快照冒充成功
+                        // 等于向 agent 谎报机械臂的状态。但**诊断量照给**：链路断掉时
+                        // 这几个数是唯一的观测手段。
+                        if (r.code == ARM_CODE_BAD_ARGUMENT) {
+                            return ReplyToJsonOrThrow(r);   // 编程错误仍走 JSON-RPC error
+                        }
+                        return StatusErrorToJson(r, s);
+                    }
                     return StatusToJson(s);
                 });
 }

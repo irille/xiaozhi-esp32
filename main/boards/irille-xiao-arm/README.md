@@ -34,7 +34,14 @@ XIAO ESP32-S3 Sense 装在 6DOF 机械臂爪端：xiaozhi 语音端 + `self.arm.
 | ToF VL53L0X | D4 / D5 | 5 / 6 | I²C0，本板不暴露为工具 |
 | ACS712 预留 | D0 | 1 | 堵转看门狗，模块到货后接 |
 
-供电：XIAO 走 buck2，与舵机轨（buck1）分离；5V/GND 用 18AWG 硅胶线，爪端并 470µF。
+供电：12V 主电源分两路降压——舵机轨走 buck1，**XIAO 走 buck2（12V→5V DC-DC，如 XY-3606），
+XIAO 的 5V 脚拿到的是 5V，12V 只到 DC-DC 输入端、不接触 XIAO 任何引脚**。两路分开是因为
+大舵机会把总线拉出噪声与跌落，共用会导致 XIAO 重启 / 相机异常 / 断网 / 音频爆音
+（`hardware/reference/ESP32-S3_云台与机械臂_Agent项目整理.md` §3.6）。
+5V/GND 用 18AWG 硅胶线，爪端并 470µF。
+
+> 「12V 通电时不能插 USB」是另一回事：那是 XIAO 的 **5V 脚**与 USB 的 **VBUS** 之间没有
+> 二极管隔离，两个 5V 源互顶——与 12V 无关。
 
 **⚠️ 控制台只能走 USB Serial/JTAG**（`config.json` 已设 `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`）。
 默认的 UART0 控制台正好占用 GPIO43/44，日志会直接灌进下位机、驱动机械臂。

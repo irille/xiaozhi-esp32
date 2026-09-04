@@ -108,6 +108,7 @@ int ArmLink::ReadLine(char* out, int cap, int timeout_ms) {
             return -1;                            // 半行作废，不交给决策器
         }
         started = true;
+        rx_bytes_++;
         if (ch == '\n') {
             if (overflow) {
                 ESP_LOGW(TAG, "rx: oversized line dropped");
@@ -277,5 +278,7 @@ void ArmLink::Snapshot(ArmStatusSnapshot* out) {
     out->link_epoch = fsm_.link_epoch;
     out->ready_seen = fsm_.ready_seen;
     out->rx_dropped = rx_dropped_;
+    out->rx_bytes = rx_bytes_;
+    out->rx_malformed = fsm_.rx_malformed;
     xSemaphoreGive(mutex_);
 }

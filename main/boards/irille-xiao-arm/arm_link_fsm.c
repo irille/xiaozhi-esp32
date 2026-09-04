@@ -534,6 +534,11 @@ ArmDecision arm_fsm_on_line(ArmFsm* f, const char* line, uint32_t rx_generation,
                             uint32_t now_ms) {
     f->rx_generation = rx_generation;
     ArmLineKind kind = arm_fsm_classify(line);
+    // 误码行必须留痕。12V 通电时没有串口日志，"收到了但认不出来"若不计数，
+    // 在仪表上和"什么都没收到"长得一模一样——而这两者的排查方向完全相反。
+    if (kind == ARM_LINE_MALFORMED) {
+        f->rx_malformed++;
+    }
 
     if (kind == ARM_LINE_POS || kind == ARM_LINE_ST) {
         cache_pos(f, line);

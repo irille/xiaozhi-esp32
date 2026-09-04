@@ -170,6 +170,7 @@ typedef struct {
     // 本纪元是否真的见过 READY。没有完整的 READY → DONE 证据链就不得认定位置已知：
     // board 启动晚于下位机时，一个孤儿 DONE 不能被当成 boot 归位。
     int      ready_seen;
+    uint32_t rx_malformed;        // 凑成整行但不合任何协议格式的计数
 
     // 急停
     int      stop_pending;        // 已发出 STOP，正在等 ACK

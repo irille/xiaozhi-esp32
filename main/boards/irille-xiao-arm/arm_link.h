@@ -33,6 +33,8 @@ struct ArmStatusSnapshot {
     uint32_t    link_epoch;    // 每见一次 READY +1 ⇒ 对端复位次数
     int         ready_seen;    // 本纪元见过 READY（区分"没见过"与"见过在等 DONE"）
     uint32_t    rx_dropped;    // 撕裂/超长而整行作废的计数，不静默丢
+    uint32_t    rx_bytes;      // 串口收到的总字节数（0 = 对端一个字节都没来）
+    uint32_t    rx_malformed;  // 凑成整行但不合协议格式的计数
 };
 
 class ArmLink {
@@ -49,6 +51,7 @@ class ArmLink {
 
  private:
     uint32_t rx_dropped_ = 0;   // 只在 RX owner 任务里自增，Snapshot 持锁读
+    uint32_t rx_bytes_ = 0;     // 同上
 
     static void RxOwnerTrampoline(void* arg);
     void RxOwnerLoop();
