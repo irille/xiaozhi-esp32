@@ -175,6 +175,10 @@ typedef struct {
     // 下位机最近一次回报里的原始 ST / ATT。诊断用：arm_state 只有 idle/moving 两值，
     // 把 IDLE / RELAXED / ESTOP 合并了，而 ATT 根本没露出来——12V 通电时没有串口日志，
     // 这两个原始值是判断"boot 验证为什么没通过"的唯一依据。
+    // boot 验证的**判决现场**：结论产生那一刻的依据，原样留下。
+    // 只记"最近一次状态"是不够的——后续流量会把它覆盖掉，而要查的恰恰是那一瞬间。
+    // 值形如 "sent" / "none" / "ok:<line>" / "bad:<line>" / "timeout" / "moving-timeout"。
+    char     boot_verdict[72];
     char     last_st[12];
     char     last_att[8];
 

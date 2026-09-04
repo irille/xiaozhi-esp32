@@ -331,6 +331,17 @@ static const char* find_field(const char* line, const char* key) {
 // 清场与 boot 验证双双 fail-open。
 // 把某字段的值原样抄出来（截到 '\0' / ';' / ','）。诊断用——判等只能回答
 // "是不是我期望的那个"，抄出来才能回答"那到底是什么"。
+// boot 验证的判决只写**第一次**——后面的流量不得覆盖现场。
+static void boot_verdict_set(ArmFsm* f, const char* tag, const char* line) {
+    if (f->boot_verdict[0]) return;
+    size_t i = 0, n = sizeof f->boot_verdict;
+    for (; tag[i] && i + 1 < n; ++i) f->boot_verdict[i] = tag[i];
+    if (line) {
+        for (size_t j = 0; line[j] && i + 1 < n; ++j, ++i) f->boot_verdict[i] = line[j];
+    }
+    f->boot_verdict[i] = '\0';
+}
+
 static void copy_field(char* out, size_t n, const char* line, const char* key) {
     out[0] = '\0';
     const char* p = find_field(line, key);
@@ -639,11 +650,19 @@ ArmDecision arm_fsm_on_line(ArmFsm* f, const char* line, uint32_t rx_generation,
         }
         if (kind == ARM_LINE_POS || kind == ARM_LINE_ST) {
             if (st_is_idle_attached(line)) {
+                f->boot_verdict[0] = '\0';          // 通过了，现场留给"ok:"
+                boot_verdict_set(f, "ok:", line);
                 f->phase = ARM_PHASE_READY;
                 f->position_known = 1;
             } else {
+                f->boot_verdict[0] = '\0';
+                boot_verdict_set(f, "bad:", line);
                 lock_position_lost(f);
             }
+        } else if (kind != ARM_LINE_DONE) {
+            // 收到了别的东西——也留痕，否则"没收到"和"收到但没进判定"分不开。
+            f->boot_verdict[0] = '\0';
+            boot_verdict_set(f, "other:", line);
         }
         return none_();
     }
@@ -771,6 +790,7 @@ ArmDecision arm_fsm_on_tick(ArmFsm* f, uint32_t now_ms) {
         // 结果依然安全。
         f->phase = ARM_PHASE_VERIFY_BOOT_HOME;
         f->boot_window_start_ms = now_ms;   // 给这次确认本身一个期限
+        boot_verdict_set(f, "sent:", NULL);
         return send_("STATUS");
     }
     // 连确认都没回音 ⇒ 落锁。期限分两档：等 STATUS 的应答给 ack_timeout*3 就够；
@@ -779,6 +799,8 @@ ArmDecision arm_fsm_on_tick(ArmFsm* f, uint32_t now_ms) {
         elapsed_past(now_ms, f->boot_window_start_ms,
                      f->boot_verify_waiting_done ? f->fallback_deadline_ms
                                                  : f->ack_timeout_ms * 3)) {
+        f->boot_verdict[0] = '\0';
+        boot_verdict_set(f, f->boot_verify_waiting_done ? "moving-timeout" : "timeout", NULL);
         f->boot_verify_waiting_done = 0;
         lock_position_lost(f);
         return none_();

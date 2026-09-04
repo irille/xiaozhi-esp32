@@ -280,6 +280,7 @@ void ArmLink::Snapshot(ArmStatusSnapshot* out) {
     out->rx_dropped = rx_dropped_;
     out->rx_bytes = rx_bytes_;
     out->rx_malformed = fsm_.rx_malformed;
+    out->boot_verdict = fsm_.boot_verdict;
     out->last_st = fsm_.last_st;
     out->last_att = fsm_.last_att;
     xSemaphoreGive(mutex_);

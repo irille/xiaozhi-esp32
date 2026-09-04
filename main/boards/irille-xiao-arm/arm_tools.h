@@ -66,17 +66,18 @@ inline void RenderLink(char* out, size_t n, const ArmStatusSnapshot& s) {
     std::snprintf(out, n,
                   "{\"phase\":\"%s\",\"epoch\":%u,\"ready_seen\":%s,"
                   "\"rx_bytes\":%u,\"rx_dropped\":%u,\"rx_malformed\":%u,"
-                  "\"last_st\":\"%s\",\"last_att\":\"%s\"}",
+                  "\"last_st\":\"%s\",\"last_att\":\"%s\",\"boot\":\"%s\"}",
                   s.phase, (unsigned)s.link_epoch, s.ready_seen ? "true" : "false",
                   (unsigned)s.rx_bytes, (unsigned)s.rx_dropped, (unsigned)s.rx_malformed,
-                  s.last_st ? s.last_st : "", s.last_att ? s.last_att : "");
+                  s.last_st ? s.last_st : "", s.last_att ? s.last_att : "",
+                  s.boot_verdict ? s.boot_verdict : "");
 }
 
 // 失败形态 + link 段。上界：错误体 ≤ 207 + `,"link":` 8 + link 段 ≤ 167 = 382。
 inline std::string StatusErrorToJson(const ArmReply& r, const ArmStatusSnapshot& s) {
-    char link[224];
+    char link[320];
     RenderLink(link, sizeof link, s);
-    char buf[480];
+    char buf[576];
     std::snprintf(buf, sizeof buf,
                   "{\"ok\":false,\"code\":\"%s\",\"recovery\":\"%s\",\"link\":%s}",
                   arm_fsm_code_name(r.code), arm_fsm_recovery_text(r.code), link);
@@ -109,7 +110,7 @@ inline std::string StatusToJson(const ArmStatusSnapshot& s) {
                       (unsigned)s.op_id, s.op_state, ms);
     }
 
-    char link[224];
+    char link[320];
     RenderLink(link, sizeof link, s);
 
     // link 段是给**没有串口日志时**的验收断言用的：12V 通电时 USB 必须拔掉
@@ -119,7 +120,7 @@ inline std::string StatusToJson(const ArmStatusSnapshot& s) {
     // 上界：字面量 205 + position_known 5 + op 271 + joints 103 + arm_state 6
     //      + version 5（parse_version 限死 0–99）+ collision 5 + phase 18
     //      + epoch 10 + ready_seen 5 + rx_dropped 10 = 643。
-    char buf[768];
+    char buf[864];
     std::snprintf(buf, sizeof buf,
                   "{\"ok\":true,\"position_known\":%s,\"operation\":%s,\"joints\":%s,"
                   "\"arm_state\":\"%s\",\"controller_version\":\"%d.%d\","

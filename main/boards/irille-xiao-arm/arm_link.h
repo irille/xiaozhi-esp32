@@ -35,6 +35,7 @@ struct ArmStatusSnapshot {
     uint32_t    rx_dropped;    // 撕裂/超长而整行作废的计数，不静默丢
     uint32_t    rx_bytes;      // 串口收到的总字节数（0 = 对端一个字节都没来）
     uint32_t    rx_malformed;  // 凑成整行但不合协议格式的计数
+    const char* boot_verdict;  // boot 验证的判决现场（诊断用，见 arm_link_fsm.h）
     const char* last_st;       // 下位机最近一次回报的原始 ST 值（诊断用）
     const char* last_att;      // 同上，原始 ATT 值
 };
