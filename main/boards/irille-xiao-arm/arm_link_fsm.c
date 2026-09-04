@@ -329,6 +329,21 @@ static const char* find_field(const char* line, const char* key) {
 // 取 `key=` 字段的值并与 want 整体比较。两端都要验：键必须在字段边界上（见
 // find_field），值必须整体相等而不是前缀——否则 `ST=IDLE_BOGUS` 会被当成 IDLE，
 // 清场与 boot 验证双双 fail-open。
+// 把某字段的值原样抄出来（截到 '\0' / ';' / ','）。诊断用——判等只能回答
+// "是不是我期望的那个"，抄出来才能回答"那到底是什么"。
+static void copy_field(char* out, size_t n, const char* line, const char* key) {
+    out[0] = '\0';
+    const char* p = find_field(line, key);
+    if (!p) return;
+    p += strlen(key);
+    size_t i = 0;
+    while (p[i] && p[i] != ';' && p[i] != ',' && i + 1 < n) {
+        out[i] = p[i];
+        i++;
+    }
+    out[i] = '\0';
+}
+
 static int field_equals(const char* line, const char* key, const char* want) {
     const char* p = find_field(line, key);
     if (!p) return 0;
@@ -542,6 +557,8 @@ ArmDecision arm_fsm_on_line(ArmFsm* f, const char* line, uint32_t rx_generation,
 
     if (kind == ARM_LINE_POS || kind == ARM_LINE_ST) {
         cache_pos(f, line);
+        copy_field(f->last_st, sizeof f->last_st, line, "ST=");
+        copy_field(f->last_att, sizeof f->last_att, line, "ATT=");
     }
 
     // ---- 对端复位：任何状态下都立即降级 ----
@@ -605,6 +622,21 @@ ArmDecision arm_fsm_on_line(ArmFsm* f, const char* line, uint32_t rx_generation,
     }
 
     if (f->phase == ARM_PHASE_VERIFY_BOOT_HOME) {
+        // **MOVING 不是坏状态，是"答案还没准备好"**：下位机的 cmd_status() 在动作
+        // 进行中只回精简的 `ST=MOVING`（arm-nano/src/protocol.cpp:751），完整的 POS
+        // 要等动作结束。把它当拒绝理由，会在对方还差一点走完时把自己锁死，
+        // 而那条本来合格的 POS 随后白白到达。继续等，并把期限拉到动作预算。
+        if (kind == ARM_LINE_ST && st_is_moving(line)) {
+            f->boot_window_start_ms = now_ms;
+            f->boot_verify_waiting_done = 1;
+            return none_();
+        }
+        // 动作走完会发 DONE。此刻再问一次，这次拿得到完整的 POS。
+        if (kind == ARM_LINE_DONE && f->boot_verify_waiting_done) {
+            f->boot_verify_waiting_done = 0;
+            f->boot_window_start_ms = now_ms;
+            return send_("STATUS");
+        }
         if (kind == ARM_LINE_POS || kind == ARM_LINE_ST) {
             if (st_is_idle_attached(line)) {
                 f->phase = ARM_PHASE_READY;
@@ -741,9 +773,13 @@ ArmDecision arm_fsm_on_tick(ArmFsm* f, uint32_t now_ms) {
         f->boot_window_start_ms = now_ms;   // 给这次确认本身一个期限
         return send_("STATUS");
     }
-    // 连确认都没回音（含 board 启动晚于下位机、始终没见过 READY）⇒ 落锁。
+    // 连确认都没回音 ⇒ 落锁。期限分两档：等 STATUS 的应答给 ack_timeout*3 就够；
+    // 若对方回过 ST=MOVING，我们是在等它把动作走完，那要给完整的动作预算。
     if (f->phase == ARM_PHASE_VERIFY_BOOT_HOME &&
-        elapsed_past(now_ms, f->boot_window_start_ms, f->ack_timeout_ms * 3)) {
+        elapsed_past(now_ms, f->boot_window_start_ms,
+                     f->boot_verify_waiting_done ? f->fallback_deadline_ms
+                                                 : f->ack_timeout_ms * 3)) {
+        f->boot_verify_waiting_done = 0;
         lock_position_lost(f);
         return none_();
     }

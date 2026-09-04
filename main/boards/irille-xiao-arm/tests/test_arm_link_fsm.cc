@@ -962,6 +962,56 @@ static void TestNoReadyUnlocksOnIdleAttached() {
     CHECK(f.position_known == 1);                     // 逻辑角即物理角
 }
 
+// boot 验证期间收到 ST=MOVING：那是"答案还没准备好"，不是拒绝理由。
+// 下位机的 cmd_status() 在动作进行中只回精简的 ST=MOVING，完整 POS 要等动作结束
+// （arm-nano/src/protocol.cpp:751）。据此落锁，会在对方还差一点走完时把自己锁死。
+static void TestBootVerifyWaitsThroughMoving() {
+    ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
+    uint32_t now = 1000 + 4001;
+    arm_fsm_on_tick(&f, now);                       // 窗口到期，发 STATUS
+    CHECK(f.phase == ARM_PHASE_VERIFY_BOOT_HOME);
+
+    now += 20;
+    OnLine(&f, "ST=MOVING", now);
+    CHECK(f.phase == ARM_PHASE_VERIFY_BOOT_HOME);   // ★ 不落锁，继续等
+    CHECK(f.position_known == 0);
+
+    // 过了原来那个 ack_timeout*3 的短期限也不能落锁——现在用的是动作预算
+    ArmDecision d = arm_fsm_on_tick(&f, now + 901);
+    CHECK(f.phase == ARM_PHASE_VERIFY_BOOT_HOME);
+    CHECK(d.action == ARM_ACT_NONE);
+
+    // 动作走完发 DONE ⇒ 再问一次
+    now += 2000;
+    d = OnLine(&f, "DONE", now);
+    CHECK(d.action == ARM_ACT_SEND);
+    CHECK(std::strcmp(d.line, "STATUS") == 0);
+
+    now += 20;
+    OnLine(&f, "POS:A=90,B=70,C=80,D=90,E=90,F=170;ST=IDLE;ATT=3F", now);
+    CHECK(f.phase == ARM_PHASE_READY);
+    CHECK(f.position_known == 1);
+}
+
+// 原始 ST / ATT 要被抄下来。判等只能回答"是不是我期望的那个"，
+// 抄出来才能回答"那到底是什么"——12V 通电时没有串口日志，这是唯一的诊断依据。
+static void TestRawStatusFieldsCaptured() {
+    ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
+    uint32_t now = 1000;
+
+    OnLine(&f, "POS:A=90,B=70,C=80,D=90,E=90,F=170;ST=RELAXED;ATT=00", now);
+    CHECK(std::strcmp(f.last_st, "RELAXED") == 0);
+    CHECK(std::strcmp(f.last_att, "00") == 0);
+
+    OnLine(&f, "POS:A=90,B=70,C=80,D=90,E=90,F=170;ST=IDLE;ATT=3F", now);
+    CHECK(std::strcmp(f.last_st, "IDLE") == 0);
+    CHECK(std::strcmp(f.last_att, "3F") == 0);
+
+    OnLine(&f, "ST=MOVING", now);        // 精简形式没有 ATT，抄不到就留空
+    CHECK(std::strcmp(f.last_st, "MOVING") == 0);
+    CHECK(f.last_att[0] == '\0');
+}
+
 // 同一条路径上的三个 fail-closed 出口：松弛、急停、少一个舵机没 attach。
 static void TestNoReadyStaysLockedUnlessIdleAttached() {
     const char* bad[] = {
@@ -1294,6 +1344,8 @@ int main() {
     TestBootWindowFallsBackToStatus();
     TestNoReadyUnlocksOnIdleAttached();
     TestNoReadyStaysLockedUnlessIdleAttached();
+    TestBootVerifyWaitsThroughMoving();
+    TestRawStatusFieldsCaptured();
     TestLockedAllowsHomeOnly();
     TestRecoveryHomeSuccess();
     TestRecoveryHomeFailureExits();
