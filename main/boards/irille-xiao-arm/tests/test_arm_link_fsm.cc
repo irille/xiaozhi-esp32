@@ -64,8 +64,8 @@ static void BringUpReady(ArmFsm* f, uint32_t* now) {
 // 上电窗口内什么证据都没等到 ⇒ 先问一次 STATUS、无回音再落锁。把 now 推到落锁时刻。
 static void BringUpLocked(ArmFsm* f, uint32_t* now) {
     *now += 4001;                  // boot_window_ms 到期
-    arm_fsm_on_tick(f, *now);      // 不直接落锁：先问 STATUS
-    *now += 901;                   // + ack_timeout_ms * 3
+    arm_fsm_on_tick(f, *now);      // 不直接落锁：先问 STATUS（见 on_tick 的论证）
+    *now += 901;                   // + ack_timeout_ms * 3：**没有回音**才落锁
     arm_fsm_on_tick(f, *now);
     CHECK(f->phase == ARM_PHASE_LOCKED_AFTER_RESET);
     CHECK(f->position_known == 0);
@@ -938,20 +938,46 @@ static void TestNoReadyFallsToLocked() {
     BringUpLocked(&f, &now);
 }
 
-// 没见过 READY ⇒ 窗口到期直接落锁，连 STATUS 都不问。
-// board 启动晚于下位机时，下位机闲在**任意位置**也会回 IDLE;ATT=3F——那不是归位
-// 证据。回退问 STATUS 的机制只对"见过 READY、DONE 丢了"成立，别越界。
-static void TestNoReadyNeverUnlocksFromStatus() {
+// 没见过 READY 时**照样去问 STATUS**，用观察代替强制归位（统筹裁定 2026-09-04）。
+//
+// 同时上电时 boot READY 结构上抓不到：Nano 在 setup() 第一句就发（几十毫秒），
+// XIAO 装好 UART 要 400–500 ms。据此落锁 ⇒ 每次冷启动都得先来一条 HOME，而那时臂
+// 可能停在任意姿态，开环大阶跃正是欠压腐蚀事故的触发候选。
+//
+// 判据换成等价且抓得到的证据：ST=IDLE + ATT=3F。下位机只有归位完成、未被中断、
+// 未 ESTOP 才会处于该状态，那时逻辑角即物理角。其余情况一律落锁 —— 仍是 fail-closed。
+static void TestNoReadyUnlocksOnIdleAttached() {
     ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
     uint32_t now = 1000 + 4001;
-    ArmDecision d = arm_fsm_on_tick(&f, now);
-    CHECK(d.action == ARM_ACT_NONE);                 // ★ 不问
-    CHECK(f.phase == ARM_PHASE_LOCKED_AFTER_RESET);
 
-    now += 20;                                       // 就算状态自己送上门
+    ArmDecision d = arm_fsm_on_tick(&f, now);
+    CHECK(d.action == ARM_ACT_SEND);                  // ★ 问，而不是落锁
+    CHECK(std::strcmp(d.line, "STATUS") == 0);
+    CHECK(f.phase == ARM_PHASE_VERIFY_BOOT_HOME);
+    CHECK(f.ready_seen == 0);                         // 全程没见过 READY
+
+    now += 20;
     OnLine(&f, "POS:A=90,B=70,C=80,D=90,E=90,F=170;ST=IDLE;ATT=3F", now);
-    CHECK(f.phase == ARM_PHASE_LOCKED_AFTER_RESET);  // 仍然锁定
-    CHECK(f.position_known == 0);
+    CHECK(f.phase == ARM_PHASE_READY);
+    CHECK(f.position_known == 1);                     // 逻辑角即物理角
+}
+
+// 同一条路径上的三个 fail-closed 出口：松弛、急停、少一个舵机没 attach。
+static void TestNoReadyStaysLockedUnlessIdleAttached() {
+    const char* bad[] = {
+        "POS:A=90,B=70,C=80,D=90,E=90,F=170;ST=RELAXED;ATT=3F",  // 松弛：位置已丢
+        "POS:A=90,B=70,C=80,D=90,E=90,F=170;ST=ESTOP;ATT=3F",    // 急停：动作被打断过
+        "POS:A=90,B=70,C=80,D=90,E=90,F=170;ST=IDLE;ATT=1F",     // 少一个 attach
+    };
+    for (const char* reply : bad) {
+        ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
+        uint32_t now = 1000 + 4001;
+        arm_fsm_on_tick(&f, now);                     // 发 STATUS
+        now += 20;
+        OnLine(&f, reply, now);
+        CHECK(f.phase == ARM_PHASE_LOCKED_AFTER_RESET);
+        CHECK(f.position_known == 0);
+    }
 }
 
 // boot 窗口内没等到 DONE，随后连 STATUS 也没回音 ⇒ 落锁
@@ -1266,7 +1292,8 @@ int main() {
     TestNoReadyFallsToLocked();
     TestBootWindowTimeoutFallsToLocked();
     TestBootWindowFallsBackToStatus();
-    TestNoReadyNeverUnlocksFromStatus();
+    TestNoReadyUnlocksOnIdleAttached();
+    TestNoReadyStaysLockedUnlessIdleAttached();
     TestLockedAllowsHomeOnly();
     TestRecoveryHomeSuccess();
     TestRecoveryHomeFailureExits();

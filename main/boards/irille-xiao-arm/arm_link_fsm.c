@@ -719,14 +719,24 @@ ArmDecision arm_fsm_on_tick(ArmFsm* f, uint32_t now_ms) {
     // DONE 是 boot 归位的还是复位前那条动作的孤儿。所以这里也发一次 STATUS。
     if (f->phase == ARM_PHASE_WAIT_BOOT_DONE &&
         elapsed_past(now_ms, f->boot_window_start_ms, f->boot_window_ms)) {
-        // 但**没见过本纪元的 READY** 就没有"上电归位"这回事可谈（board 启动晚于
-        // 下位机，或 READY 整条丢了）。那种情况下一条 IDLE;ATT=3F 只说明下位机
-        // 此刻闲着——它可能停在任意位置，不构成归位证据。裁定 5 要求保持 LOCKED，
-        // 由 self.arm.home 显式恢复；去问 STATUS 反而会把无主状态当成解锁依据。
-        if (!f->ready_seen) {
-            lock_position_lost(f);
-            return none_();
-        }
+        // **不看 ready_seen**——同时上电时那条 boot READY 本来就抓不到（实测：Nano 在
+        // setup() 第一句就发 READY，约几十毫秒；XIAO 装好 UART 要 400–500 ms，差一个
+        // 数量级）。据此落锁等于让每次冷启动都必须先来一条 HOME，而冷启动时臂可能停在
+        // 任意姿态，那条 HOME 就是一次**大偏置开环阶跃**——正是 2026-09-01 欠压腐蚀
+        // 事故的触发候选。用观察代替强制更安全。
+        //
+        // 判据是 STATUS 回来的 ST=IDLE + ATT=3F（在 VERIFY_BOOT_HOME 分支里判）：
+        // 下位机只有**归位完成、未被中断、未 ESTOP**才会六个舵机全 attach 且 IDLE，
+        // 那时它的逻辑角就是物理角。RELAXED / ESTOP / ATT≠3F / 无回音 ⇒ 照样落锁。
+        // 所以这仍然是 fail-closed，只是把"证据"从 READY 换成了等价且抓得到的状态。
+        //
+        // ⚠️ 这一条曾在 PR review 第三轮被判为 fail-open 而改成"没 READY 就落锁"，
+        // 2026-09-04 统筹据上述理由撤销该改动。**论证写在这里就是为了别再被翻回去**。
+        //
+        // 此刻发 STATUS 不违反"上电窗口零下行"：窗口 4 s，而下位机自动归位约 2.6 s
+        // （HOME 的 max_ms），我们的窗口起点还比它上电晚 ~0.4 s，已经过了归位期。
+        // 万一它仍在归位，这条 STATUS 会把归位打断成 RELAXED —— 那时 ATT≠3F，落锁，
+        // 结果依然安全。
         f->phase = ARM_PHASE_VERIFY_BOOT_HOME;
         f->boot_window_start_ms = now_ms;   // 给这次确认本身一个期限
         return send_("STATUS");
