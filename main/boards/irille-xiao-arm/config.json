@@ -12,7 +12,7 @@
                 "CONFIG_SR_WN_WN9_HIESP=y",
                 "CONFIG_SR_WN_WN9_SOPHIA_TTS=n",
                 "CONFIG_SR_WN_WN9_HEYILY_TTS2=n",
-                "CONFIG_OTA_URL=\"http://192.168.1.48:8003/xiaozhi/ota/\"",
+                "CONFIG_OTA_URL=\"http://192.168.1.48:8004/xiaozhi/ota/\"",
                 "CONFIG_CAMERA_OV2640=n",
                 "CONFIG_CAMERA_OV3660=y",
                 "CONFIG_CAMERA_OV3660_AUTO_DETECT_DVP_INTERFACE_SENSOR=y",
