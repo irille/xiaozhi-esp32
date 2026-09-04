@@ -62,9 +62,18 @@ static void BringUpReady(ArmFsm* f, uint32_t* now) {
 }
 
 // 上电窗口内什么证据都没等到 ⇒ 先问一次 STATUS、无回音再落锁。把 now 推到落锁时刻。
+// 窗口到期后决策器要走两步：先发一个空行冲下位机的行缓冲（XIAO 的 ROM bootloader
+// 会在同一条 TX 腿上吐启动垃圾），再问 STATUS。返回**第二步**的决策。
+static ArmDecision BootProbe(ArmFsm* f, uint32_t now) {
+    ArmDecision flush = arm_fsm_on_tick(f, now);
+    CHECK(flush.action == ARM_ACT_SEND);
+    CHECK(flush.line[0] == '\0');          // ★ 空行
+    return arm_fsm_on_tick(f, now);
+}
+
 static void BringUpLocked(ArmFsm* f, uint32_t* now) {
     *now += 4001;                  // boot_window_ms 到期
-    arm_fsm_on_tick(f, *now);      // 不直接落锁：先问 STATUS（见 on_tick 的论证）
+    BootProbe(f, *now);            // 不直接落锁：冲缓冲 + 问 STATUS（见 on_tick 的论证）
     *now += 901;                   // + ack_timeout_ms * 3：**没有回音**才落锁
     arm_fsm_on_tick(f, *now);
     CHECK(f->phase == ARM_PHASE_LOCKED_AFTER_RESET);
@@ -228,7 +237,7 @@ static void TestBootWindowFallsBackToStatus() {
     CHECK(f.phase == ARM_PHASE_WAIT_BOOT_DONE);
 
     now += 4001;                       // 窗口到期，一个 DONE 也没见到
-    ArmDecision d = arm_fsm_on_tick(&f, now);
+    ArmDecision d = BootProbe(&f, now);
     CHECK(d.action == ARM_ACT_SEND);   // ★ 先问一次，不是直接落锁
     CHECK(std::strcmp(d.line, "STATUS") == 0);
     CHECK(f.phase == ARM_PHASE_VERIFY_BOOT_HOME);
@@ -950,7 +959,7 @@ static void TestNoReadyUnlocksOnIdleAttached() {
     ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
     uint32_t now = 1000 + 4001;
 
-    ArmDecision d = arm_fsm_on_tick(&f, now);
+    ArmDecision d = BootProbe(&f, now);
     CHECK(d.action == ARM_ACT_SEND);                  // ★ 问，而不是落锁
     CHECK(std::strcmp(d.line, "STATUS") == 0);
     CHECK(f.phase == ARM_PHASE_VERIFY_BOOT_HOME);
@@ -968,7 +977,7 @@ static void TestNoReadyUnlocksOnIdleAttached() {
 static void TestBootVerifyWaitsThroughMoving() {
     ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
     uint32_t now = 1000 + 4001;
-    arm_fsm_on_tick(&f, now);                       // 窗口到期，发 STATUS
+    BootProbe(&f, now);                             // 窗口到期：冲缓冲 + 发 STATUS
     CHECK(f.phase == ARM_PHASE_VERIFY_BOOT_HOME);
 
     now += 20;
@@ -1022,7 +1031,7 @@ static void TestNoReadyStaysLockedUnlessIdleAttached() {
     for (const char* reply : bad) {
         ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
         uint32_t now = 1000 + 4001;
-        arm_fsm_on_tick(&f, now);                     // 发 STATUS
+        BootProbe(&f, now);                           // 冲缓冲 + 发 STATUS
         now += 20;
         OnLine(&f, reply, now);
         CHECK(f.phase == ARM_PHASE_LOCKED_AFTER_RESET);

@@ -171,6 +171,7 @@ typedef struct {
     // board 启动晚于下位机时，一个孤儿 DONE 不能被当成 boot 归位。
     int      ready_seen;
     uint32_t rx_malformed;        // 凑成整行但不合任何协议格式的计数
+    int      boot_flush_sent;     // 已发过冲行缓冲的空行（见 on_tick 的论证）
     int      boot_verify_waiting_done;  // boot 验证中对方回过 MOVING，正在等它的 DONE
     // 下位机最近一次回报里的原始 ST / ATT。诊断用：arm_state 只有 idle/moving 两值，
     // 把 IDLE / RELAXED / ESTOP 合并了，而 ATT 根本没露出来——12V 通电时没有串口日志，

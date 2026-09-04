@@ -788,6 +788,24 @@ ArmDecision arm_fsm_on_tick(ArmFsm* f, uint32_t now_ms) {
         // （HOME 的 max_ms），我们的窗口起点还比它上电晚 ~0.4 s，已经过了归位期。
         // 万一它仍在归位，这条 STATUS 会把归位打断成 RELAXED —— 那时 ATT≠3F，落锁，
         // 结果依然安全。
+        // **先发一个空行冲掉下位机的行缓冲**，再问 STATUS。
+        //
+        // 本板的 TX 是 GPIO43 = U0TXD——ESP32-S3 的 **ROM bootloader 会在这条腿上
+        // 以 115200 吐启动信息**，与我们把控制台改到 USB Serial/JTAG 无关（那只管
+        // app 阶段）。这些字节在上电瞬间灌进下位机的行缓冲：撑满即置 g_discarding，
+        // 此后**直到下一个 '\n' 全部丢弃**（arm-nano/src/protocol.cpp:1104）。
+        // 于是我们第一条 `STATUS\n` 的那个换行只是终结了丢弃期，**STATUS 自己也被丢**，
+        // 第二条才落在干净缓冲上。实测现象正是如此：boot 判决 "timeout"（900ms 无应答），
+        // 而随后手动查询立刻拿到合格的 POS。
+        //
+        // 空行本身可能让下位机把那段垃圾当一行去解析并回 ERROR:INVALID_COMMAND——无害，
+        // 决策器在验证阶段会把它记成 other: 并继续等 STATUS 的应答。
+        //
+        // 这条要求 issue #40 立项时就写了（"上电先发空行冲行缓冲"），实现时漏了。
+        if (!f->boot_flush_sent) {
+            f->boot_flush_sent = 1;
+            return send_("");          // Execute 会写出单个 '\n'
+        }
         f->phase = ARM_PHASE_VERIFY_BOOT_HOME;
         f->boot_window_start_ms = now_ms;   // 给这次确认本身一个期限
         boot_verdict_set(f, "sent:", NULL);
