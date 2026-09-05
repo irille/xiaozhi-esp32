@@ -204,6 +204,9 @@ inline void Register(ArmLink& link) {
         {"self.arm.move_to_preset",
          "Move the arm to a named preset pose. The gripper is not part of a preset - use "
          "the gripper tools for that.\n"
+         "Presets on the v1 controller: HOME (stowed), READY (at the work surface), "
+         "READY_ABOVE (clearance pose over READY). Names are uppercase and must match "
+         "exactly; anything else comes back as UNKNOWN_PRESET.\n"
          "Clearance is NOT symmetric: with the gripper closed, the return leg "
          "READY_ABOVE -> HOME is refused as a self-collision. Call self.arm.gripper_open "
          "before heading home.",
@@ -214,6 +217,9 @@ inline void Register(ArmLink& link) {
          "the result comes back as ACCEPTANCE_UNKNOWN, do NOT call this again - check "
          "self.arm.status first, because repeating it would reopen the gripper and drop "
          "whatever is held.\n"
+         "READY is the only usable location on the v1 controller: the sequence needs both "
+         "<name> and <name>_ABOVE to exist, and HOME has no _ABOVE counterpart. Names are "
+         "uppercase.\n"
          "Starting this from HOME with the gripper already closed is fine - it is accepted "
          "and runs to completion.",
          ARM_REQ_PICK},
@@ -221,7 +227,9 @@ inline void Register(ArmLink& link) {
          "Place the held object at a named preset location: approach from above, descend, "
          "open the gripper, and lift back up. The whole sequence is one motion. If the "
          "result comes back as ACCEPTANCE_UNKNOWN, do NOT call this again - check "
-         "self.arm.status first.",
+         "self.arm.status first.\n"
+         "READY is the only usable location on the v1 controller, for the same reason as "
+         "self.arm.pick_from_preset. Names are uppercase.",
          ARM_REQ_PLACE},
     };
     for (const auto& t : kNamedTools) {
