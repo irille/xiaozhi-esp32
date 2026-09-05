@@ -101,6 +101,21 @@ cd firmware && idf.py -p <端口> flash monitor
 治具长期保留：台面标定、点动、批量误码测试仍靠它。产品固件不复制它的 HTTP 控制台——
 将来若需要台面直控，由 Hub/服务端的工具面承担。
 
+**互刷会连分区表一起换，但 WiFi 配置不会丢**（2026-09-05 实测）。两者的分区表并不相同：
+
+| | 产品固件 `partitions/v2/8m.csv` | 治具 `SINGLE_APP_LARGE` |
+|---|---|---|
+| nvs | 0x9000，16 KB | 0x9000，24 KB |
+| otadata | 0xd000 | 无 |
+| app | ota_0 / ota_1 各 3 MB（0x20000 起） | factory 1500 KB（0x10000 起） |
+
+治具的 nvs 多出的 8 KB 正好盖住产品固件放 otadata 的位置，看上去像是会触发重新格式化
+——**实测不会**。`idf.py flash` 只写 bootloader / 分区表 / app，不碰 nvs 数据区，而两张表的
+nvs 起始都在 0x9000。来回各刷一次后设备自行连上原 WiFi 并完成 OTA 版本检查，未要求重新配网。
+
+⚠️ 这条只对 `idf.py flash` 成立。**全刷 `merged-binary` 会清 NVS**（WiFi 与 ota_url 一并丢失），
+互刷不要用它。
+
 ---
 
 ## 工具面
