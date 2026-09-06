@@ -158,6 +158,42 @@ int arm_fsm_joint_is_valid(const char* joint) {
     return joint && joint[0] >= 'A' && joint[0] <= 'F' && joint[1] == '\0';
 }
 
+int arm_fsm_targets_normalize(const char* in, char* out, size_t out_n) {
+    if (!in || !out || out_n < ARM_REQ_TARGETS_MAX) return 0;
+    unsigned seen = 0;
+    size_t o = 0;
+    const char* p = in;
+    for (;;) {
+        while (*p == ' ' || *p == '\t') ++p;
+        char j = *p;
+        if (j >= 'a' && j <= 'f') j = (char)(j - 'a' + 'A');
+        if (j < 'A' || j > 'F') return 0;
+        unsigned bit = 1u << (j - 'A');
+        if (seen & bit) return 0;              // 同一关节给两次
+        ++p;
+        while (*p == ' ' || *p == '\t') ++p;
+        if (*p != '=') return 0;
+        ++p;
+        while (*p == ' ' || *p == '\t') ++p;
+        int deg = 0, digits = 0;
+        while (*p >= '0' && *p <= '9') {
+            deg = deg * 10 + (*p - '0');
+            if (++digits > 3) return 0;        // 先卡位数，免得 99999 溢出
+            ++p;
+        }
+        if (digits == 0 || deg > 180) return 0;
+        while (*p == ' ' || *p == '\t') ++p;
+        // 规范形每个成员最长 "X=180," 6 字节，六个成员 35 字节 < 48，不会越界
+        int n = snprintf(out + o, out_n - o, "%s%c=%d", o ? "," : "", j, deg);
+        if (n < 0 || (size_t)n >= out_n - o) return 0;
+        o += (size_t)n;
+        seen |= bit;
+        if (*p == '\0') return 1;
+        if (*p != ',') return 0;
+        ++p;
+    }
+}
+
 int arm_fsm_name_is_valid(const char* name) {
     if (!name) return 0;
     size_t n = strlen(name);
@@ -448,13 +484,18 @@ static void render_cmd(const ArmRequest* r, char* out, size_t n) {
         case ARM_REQ_HOME: snprintf(out, n, "HOME"); break;
         case ARM_REQ_GRIP_OPEN: snprintf(out, n, "GRIP_OPEN"); break;
         case ARM_REQ_GRIP_CLOSE: snprintf(out, n, "GRIP_CLOSE"); break;
-        case ARM_REQ_JOINT:
+        case ARM_REQ_MOVE: {
+            char canon[ARM_REQ_TARGETS_MAX];
+            if (!arm_fsm_targets_normalize(r->targets, canon, sizeof canon)) {
+                canon[0] = '\0';   // request_args_ok 已挡住，这里只是防御
+            }
             if (r->ramp_ms > 0) {
-                snprintf(out, n, "JOINT:%s:%d:%d", r->joint, r->angle, r->ramp_ms);
+                snprintf(out, n, "MOVE:%s:%d", canon, r->ramp_ms);
             } else {
-                snprintf(out, n, "JOINT:%s:%d", r->joint, r->angle);
+                snprintf(out, n, "MOVE:%s", canon);
             }
             break;
+        }
         case ARM_REQ_MOVE_PRESET: snprintf(out, n, "MOVE_PRESET:%s", r->name); break;
         case ARM_REQ_PICK: snprintf(out, n, "PICK:%s", r->name); break;
         case ARM_REQ_PLACE: snprintf(out, n, "PLACE:%s", r->name); break;
@@ -466,11 +507,12 @@ static void render_cmd(const ArmRequest* r, char* out, size_t n) {
 // 白名单校验：**在拼命令之前**。合法返回 1。
 static int request_args_ok(const ArmRequest* r) {
     switch (r->kind) {
-        case ARM_REQ_JOINT:
-            if (!arm_fsm_joint_is_valid(r->joint)) return 0;
-            if (r->angle < 0 || r->angle > 180) return 0;
+        case ARM_REQ_MOVE: {
+            char canon[ARM_REQ_TARGETS_MAX];
+            if (!arm_fsm_targets_normalize(r->targets, canon, sizeof canon)) return 0;
             if (r->ramp_ms < 0 || r->ramp_ms > 100) return 0;
             return 1;
+        }
         case ARM_REQ_MOVE_PRESET:
         case ARM_REQ_PICK:
         case ARM_REQ_PLACE:

@@ -110,6 +110,9 @@
 #define CAMERA_PIN_HREF  GPIO_NUM_47
 #define CAMERA_PIN_PCLK  GPIO_NUM_13
 
-#define XCLK_FREQ_HZ 20000000
+// 与 config.json 选的传感器档位配套：OV3660 的 1280x720 JPEG 档在驱动格式表里
+// 声明 `.xclk = 10000000`（寄存器表名 `10Minput_1280x720`），640x480 档才是 20M。
+// 驱动不校验两者是否一致，配错只会得到时序不对的帧，所以改档位必须同时改这里。
+#define XCLK_FREQ_HZ 10000000
 
 #endif  // _BOARD_CONFIG_H_

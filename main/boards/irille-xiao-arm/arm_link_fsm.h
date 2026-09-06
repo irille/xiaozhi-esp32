@@ -17,6 +17,7 @@
 //   arm_fsm_on_tick()     时钟推进
 // 时间由调用方以单调毫秒传入，本文件不读时钟。
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -90,20 +91,22 @@ typedef enum {
     ARM_REQ_STOP,
     ARM_REQ_GRIP_OPEN,
     ARM_REQ_GRIP_CLOSE,
-    ARM_REQ_JOINT,
+    ARM_REQ_MOVE,          // 多关节同步（单关节是它的退化形式）
     ARM_REQ_MOVE_PRESET,
     ARM_REQ_PICK,
     ARM_REQ_PLACE,
     ARM_REQ_STATUS,
 } ArmReqKind;
 
+// MOVE 的目标串按**原样**传进来（"B=120, c=60" 这种也照收），由决策器规范化后
+// 才拼命令：调用方若自己截断/取首字符，"Afoo=95" 就被静默改成合法的 "A=95" 了——
+// 截断是决策器要拒的事，不该在上游发生。
+#define ARM_REQ_TARGETS_MAX 48
+
 typedef struct {
     ArmReqKind kind;
-    // JOINT 的关节名按**原样**传进来（不是单个 char）：调用方若先取首字符，
-    // "Afoo" 就被静默截断成合法的 "A" 了——截断是决策器要拒的事，不该在上游发生。
-    char joint[8];
-    int  angle;        // JOINT: 度
-    int  ramp_ms;      // JOINT: 每度毫秒，0 = 省略，负数 = 上游给了未知档位
+    char targets[ARM_REQ_TARGETS_MAX];   // MOVE: "<J>=<deg>[,<J>=<deg>…]"，1–6 个成员
+    int  ramp_ms;      // MOVE: 每度毫秒，0 = 省略，负数 = 上游给了未知档位
     char name[16];     // MOVE_PRESET / PICK / PLACE
 } ArmRequest;
 
@@ -247,6 +250,10 @@ ArmDecision arm_fsm_on_tick(ArmFsm* fsm, uint32_t now_ms);
 // **不做转义**——不合规直接拒绝，免得把换行拼进命令行、注入第二条指令。
 int arm_fsm_name_is_valid(const char* name);
 int arm_fsm_joint_is_valid(const char* joint);
+// MOVE 目标串规范化：去空白、关节字母转大写、逐成员校验（A–F、0–180、不重复、
+// 1–6 个）。合法则把规范形 "B=120,C=60" 写进 out 并返回 1；否则返回 0，out 不可用。
+// out 至少 ARM_REQ_TARGETS_MAX 字节。
+int arm_fsm_targets_normalize(const char* in, char* out, size_t out_n);
 
 // 供测试与状态查询共用的纯函数
 ArmLineKind arm_fsm_classify(const char* line);

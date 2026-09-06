@@ -127,7 +127,7 @@ nvs 起始都在 0x9000。来回各刷一次后设备自行连上原 WiFi 并完
 | `self.arm.home` | `HOME` | 回原点；也是复位后唯一的恢复途径 |
 | `self.arm.stop` | `STOP` ×3 | **功能性取消**，非安全级急停 |
 | `self.arm.gripper_open` / `_close` | `GRIP_OPEN` / `GRIP_CLOSE` | |
-| `self.arm.move_joint` | `JOINT:<A-F>:<deg>[:<ms>]` | speed = fast/normal/fine → 10/20/50 ms/° |
+| `self.arm.move_joints` | `MOVE:<J>=<deg>[,…][:<ms>]` | targets 形如 `"B=120,C=60"`（1–6 个成员，同步走、整条路径一次干跑）；speed = fast/normal/fine → 10/20/50 ms/°。2026-09-06 取代单关节 `move_joint` |
 | `self.arm.move_to_preset` | `MOVE_PRESET:<name>` | |
 | `self.arm.pick_from_preset` | `PICK:<name>` | **非幂等**，禁止任何自动重发 |
 | `self.arm.place_to_preset` | `PLACE:<name>` | **非幂等** |

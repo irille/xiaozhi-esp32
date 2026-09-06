@@ -27,6 +27,25 @@ constexpr const char* kPollSuffix =
     "self.arm.status until that operation reaches a terminal state before issuing the "
     "next motion.";
 
+// 关节朝向与参考姿态：status 给的是六个裸角度，agent 只有知道"B=180 是收拢、
+// F=80 是闭爪"才能把数字读成姿势（#40 收官实测：LLM 会选对关节，但不知道
+// 当前姿势是什么）。朝向语义来自协议稿 §2.1.1 的零位与符号，参考姿态来自
+// 下位机 config.h 的 HOME/READY 表——与 F3 的预设名同一类软耦合：Nano 改表则
+// 本文案过期，靠错误恢复文案兜底。这里刻意不写关节限位（那是下位机的事，
+// 越界由它拒）。
+constexpr const char* kJointGuide =
+    "\nJoint guide (v1 controller, degrees). A base yaw: 90 = facing forward. "
+    "B shoulder: 180 = folded back over the base (stowed), about 80 = upper arm "
+    "vertical, smaller = reaching further forward. C elbow: 0 = arm nearly straight, "
+    "larger = elbow bends and the forearm swings forward. "
+    "D wrist pitch: larger = gripper tilts up, smaller = looks down at the table. "
+    "E wrist roll: 90 = level. F gripper: 80 = closed, 180 = fully open.\n"
+    "Reference poses: HOME = A90 B180 C90 D90 E90 F90 (stowed, folded back over "
+    "the base - this is also the power-on pose). READY = A90 B60 C30 D105 E90 "
+    "(gripper down at the work surface). READY_ABOVE = READY with B70 (hovering "
+    "above it). Compare the joints reported by self.arm.status with these to tell "
+    "which pose the arm is in.";
+
 // `max_ms` 可为 null（受理是推断出来的、拿不到耗时时如实报 null，不按角度反推——
 // 那等于在 board 层做角度计算）。先备好这个片段，省得每处都复制整条格式串。
 inline void RenderMaxMs(char* out, size_t n, int32_t max_ms) {
@@ -204,8 +223,10 @@ inline void Register(ArmLink& link) {
         {"self.arm.move_to_preset",
          "Move the arm to a named preset pose. The gripper is not part of a preset - use "
          "the gripper tools for that.\n"
-         "Presets on the v1 controller: HOME (stowed), READY (at the work surface), "
-         "READY_ABOVE (clearance pose over READY). Names are uppercase and must match "
+         "Presets on the v1 controller: HOME (stowed, folded back over the base), READY "
+         "(gripper down at the work surface), READY_ABOVE (hovering above READY - use it "
+         "to get over the work surface without touching anything). Names are uppercase "
+         "and must match "
          "exactly; anything else comes back as UNKNOWN_PRESET.\n"
          "Clearance is NOT symmetric: with the gripper closed, the return leg "
          "READY_ABOVE -> HOME is refused as a self-collision. Call self.arm.gripper_open "
@@ -245,24 +266,32 @@ inline void Register(ArmLink& link) {
     }
 
     // 下面两个形态各不相同，保持独立。
-    mcp.AddTool("self.arm.move_joint",
+    //
+    // move_joints 取代 v1 的单关节 move_joint（2026-09-06 用户定案）：agent 串行单关节
+    // 拼姿态会制造"B 到位、C 未动"的人为中间姿态并撞上互锁；一条命令同步走真实路径
+    // 反而更安全。工具数仍是九个——单关节是它的退化形式。参数只能是字符串：上游
+    // MCP 的 PropertyList 没有 object/array 类型。
+    mcp.AddTool("self.arm.move_joints",
                 std::string(
-                    "Turn a single joint to an absolute angle. Joints are named A to F from "
-                    "the base outwards: A rotates the base, B the shoulder, C the elbow, "
-                    "D the wrist pitch, E the wrist roll, F the gripper. Angles outside the "
-                    "joint's mechanical range are rejected by the arm controller - nothing "
-                    "moves. Speed is one of fast, normal or fine; fine is for delicate "
-                    "approaches.") + kPollSuffix,
-                PropertyList({Property("joint", kPropertyTypeString),
-                              Property("angle", kPropertyTypeInteger, 0, 180),
+                    "Move one or more joints to absolute angles in a single synchronised "
+                    "motion. targets is a comma-separated list like \"B=120,C=60,D=95\" - "
+                    "letters A to F, angles in degrees; joints not listed stay where they "
+                    "are. Prefer this over several single-joint calls when you want a pose: "
+                    "all listed joints move together and the whole path is checked once by "
+                    "the collision guard. A path that would collide is refused with "
+                    "COLLISION and nothing moves - then split it: raise or retract first "
+                    "(B up, C towards 0, D up), and reach out or lower in a second call. "
+                    "Angles outside a joint's mechanical range are rejected by the arm "
+                    "controller. Speed is one of fast, normal or fine; fine is for "
+                    "delicate approaches.") + kJointGuide + kPollSuffix,
+                PropertyList({Property("targets", kPropertyTypeString),
                               Property("speed", kPropertyTypeString, std::string("normal"))}),
                 [&link](const PropertyList& p) -> ReturnValue {
-                    ArmRequest r = MakeReq(ARM_REQ_JOINT);
-                    // 原样带过去：这里若先取首字符，"Afoo" 就被静默截断成合法的
-                    // "A" 了。截断该由决策器拒，不是在这里悄悄发生（FR-010a）。
-                    std::snprintf(r.joint, sizeof r.joint, "%s",
-                                  p["joint"].value<std::string>().c_str());
-                    r.angle = p["angle"].value<int>();
+                    ArmRequest r = MakeReq(ARM_REQ_MOVE);
+                    // 原样带过去，规范化（去空白、转大写、查重）由决策器做，
+                    // 那样才被主机自检覆盖（FR-010a 的同一条理由）。
+                    std::snprintf(r.targets, sizeof r.targets, "%s",
+                                  p["targets"].value<std::string>().c_str());
                     r.ramp_ms = RampMsOf(p["speed"].value<std::string>());
                     return ReplyToJsonOrThrow(link.Request(r));
                 });
@@ -272,7 +301,13 @@ inline void Register(ArmLink& link) {
                 "current joint angles, and whether the arm's position is currently trusted. "
                 "Poll this after a motion tool returns accepted to find out whether the "
                 "motion finished, was stopped, or timed out. While a motion is running this "
-                "returns a cached snapshot and does not disturb the arm.",
+                "returns a cached snapshot and does not disturb the arm.\n"
+                "operation.state is one of: idle, pending_acceptance, moving, done, stopped, "
+                "timed_out, reset, link_failed, rejected, acceptance_unknown. Only done means "
+                "the motion completed; the failure states carry code and recovery. "
+                "position_known=false means the controller no longer trusts where the arm is "
+                "- call self.arm.home before any other motion. joints is null until the "
+                "position is known." + std::string(kJointGuide),
                 PropertyList(),
                 [&link](const PropertyList&) -> ReturnValue {
                     // 是否需要打串口由决策器裁定；这里无条件走 Request，

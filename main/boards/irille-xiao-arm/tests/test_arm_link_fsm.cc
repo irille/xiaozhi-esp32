@@ -80,12 +80,20 @@ static void BringUpLocked(ArmFsm* f, uint32_t* now) {
     CHECK(f->position_known == 0);
 }
 
+// 单关节 MOVE（v1 的 JOINT 语义在 move_joints 下的退化形式）。
 static ArmRequest JointReq(const char* j, int deg) {
     ArmRequest r;
     std::memset(&r, 0, sizeof(r));
-    r.kind = ARM_REQ_JOINT;
-    std::snprintf(r.joint, sizeof(r.joint), "%s", j);
-    r.angle = deg;
+    r.kind = ARM_REQ_MOVE;
+    std::snprintf(r.targets, sizeof(r.targets), "%s=%d", j, deg);
+    return r;
+}
+
+static ArmRequest MoveReq(const char* targets) {
+    ArmRequest r;
+    std::memset(&r, 0, sizeof(r));
+    r.kind = ARM_REQ_MOVE;
+    std::snprintf(r.targets, sizeof(r.targets), "%s", targets);
     return r;
 }
 
@@ -195,7 +203,7 @@ static void TestJointRejectsMultiChar() {
     ArmRequest r = JointReq("Afoo", 95);
     ArmDecision d = arm_fsm_on_request(&f, &r, now);
     CHECK(d.action == ARM_ACT_REPLY);
-    CHECK(d.reply.code == ARM_CODE_BAD_ARGUMENT);   // 拒绝，不是截断成 JOINT:A:95
+    CHECK(d.reply.code == ARM_CODE_BAD_ARGUMENT);   // 拒绝，不是截断成 MOVE:A=95
 }
 
 // READY / PONG 的载荷必须是合协议的版本号。带尾巴的 "1.1junk" 若被接受，
@@ -289,7 +297,7 @@ static void TestAcceptAndDone() {
     ArmRequest r = JointReq("A", 95);
     ArmDecision d = arm_fsm_on_request(&f, &r, now);
     CHECK(d.action == ARM_ACT_SEND);
-    CHECK(std::strcmp(d.line, "JOINT:A:95") == 0);
+    CHECK(std::strcmp(d.line, "MOVE:A=95") == 0);
     CHECK(f.op_state == ARM_OP_PENDING_ACCEPTANCE);
 
     now += 50;
@@ -1293,7 +1301,7 @@ static void TestCommandRendering() {
     BringUpReady(&f, &now);
 
     struct { ArmRequest req; const char* expect; } cases[] = {
-        {JointReq("A", 95), "JOINT:A:95"},
+        {JointReq("A", 95), "MOVE:A=95"},
         {SimpleReq(ARM_REQ_GRIP_OPEN), "GRIP_OPEN"},
         {SimpleReq(ARM_REQ_GRIP_CLOSE), "GRIP_CLOSE"},
         {NamedReq(ARM_REQ_MOVE_PRESET, "READY"), "MOVE_PRESET:READY"},
@@ -1307,16 +1315,54 @@ static void TestCommandRendering() {
         CHECK(std::strcmp(d.line, tc.expect) == 0);
     }
 
-    // 带速度档的 JOINT
+    // 带速度档的 MOVE
     ArmFsm g = f;
     ArmRequest r = JointReq("B", 70);
     r.ramp_ms = 50;
     ArmDecision d = arm_fsm_on_request(&g, &r, now);
-    CHECK(std::strcmp(d.line, "JOINT:B:70:50") == 0);
+    CHECK(std::strcmp(d.line, "MOVE:B=70:50") == 0);
+}
+
+// MOVE 目标串：规范化（空白/小写）与拒绝（重复、越界、缺项、非关节、超六项）。
+static void TestMoveTargets() {
+    char out[ARM_REQ_TARGETS_MAX];
+    CHECK(arm_fsm_targets_normalize(" b=120, c = 60 ,D=95", out, sizeof out) == 1);
+    CHECK(std::strcmp(out, "B=120,C=60,D=95") == 0);
+    CHECK(arm_fsm_targets_normalize("A=0,B=180,C=150,D=70,E=90,F=80", out, sizeof out) == 1);
+    CHECK(std::strcmp(out, "A=0,B=180,C=150,D=70,E=90,F=80") == 0);
+    const char* bad[] = {
+        "", " ", "B", "B=", "=90", "B=90,", ",B=90", "B=90,,C=60", "B=90,B=91",
+        "G=90", "B=181", "B=1000", "B=-5", "B=9x", "Bfoo=95", "B=90;C=60", "B=90 C=60",
+        "A=1,B=1,C=1,D=1,E=1,F=1,A=2",
+    };
+    for (const char* t : bad) {
+        CHECK(arm_fsm_targets_normalize(t, out, sizeof out) == 0);
+    }
+    CHECK(arm_fsm_targets_normalize(nullptr, out, sizeof out) == 0);
+
+    // 走完整决策：多成员拼成一条 MOVE，最长合法行落在 ARM_FSM_LINE_MAX 内
+    ArmFsm f; ArmFsmConfig c = TestCfg(); arm_fsm_init(&f, &c);
+    uint32_t now = 1000;
+    BringUpReady(&f, &now);
+    ArmRequest r = MoveReq("a=180, b=180, c=150, d=180, e=180, f=180");
+    r.ramp_ms = 100;
+    ArmDecision d = arm_fsm_on_request(&f, &r, now);
+    CHECK(d.action == ARM_ACT_SEND);
+    CHECK(std::strcmp(d.line, "MOVE:A=180,B=180,C=150,D=180,E=180,F=180:100") == 0);
+    CHECK(std::strlen(d.line) < ARM_FSM_LINE_MAX);
+
+    ArmFsm g; arm_fsm_init(&g, &c);
+    now = 1000;
+    BringUpReady(&g, &now);
+    ArmRequest dup = MoveReq("B=90,B=91");
+    d = arm_fsm_on_request(&g, &dup, now);
+    CHECK(d.action == ARM_ACT_REPLY);
+    CHECK(d.reply.code == ARM_CODE_BAD_ARGUMENT);
 }
 
 int main() {
     TestClassify();
+    TestMoveTargets();
     TestPosRejectsMalformedValues();
     TestStatusKeysNeedFieldBoundary();
     TestJointRejectsMultiChar();
